@@ -1,0 +1,272 @@
+package docker
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os/exec"
+	"strconv"
+	"strings"
+
+	"dockertree/internal/core"
+)
+
+type Command struct {
+	Name string
+	Args []string
+	Dir  string
+}
+
+func (c Command) String() string {
+	parts := make([]string, 0, len(c.Args)+1)
+	parts = append(parts, c.Name)
+	for _, arg := range c.Args {
+		parts = append(parts, quoteArg(arg))
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+type Result struct {
+	Command  string `json:"command"`
+	Output   string `json:"output"`
+	ExitCode int    `json:"exitCode"`
+	Error    string `json:"error,omitempty"`
+}
+
+type Executor interface {
+	Execute(ctx context.Context, cmd Command) (Result, error)
+	Logs(ctx context.Context, project core.Project, service string) (string, error)
+	SearchImages(ctx context.Context, term string) ([]SearchResult, error)
+	LocalImages(ctx context.Context) ([]LocalImage, error)
+}
+
+type CLIExecutor struct {
+	Runner Runner
+}
+
+func (e CLIExecutor) Execute(ctx context.Context, cmd Command) (Result, error) {
+	var out []byte
+	var err error
+	if e.Runner != nil {
+		out, err = e.Runner.Run(ctx, cmd.Name, cmd.Args...)
+	} else {
+		process := exec.CommandContext(ctx, cmd.Name, cmd.Args...)
+		process.Dir = cmd.Dir
+		out, err = process.CombinedOutput()
+	}
+	result := Result{Command: cmd.String(), Output: string(out)}
+	if err != nil {
+		result.Error = err.Error()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			result.ExitCode = exitErr.ExitCode()
+		} else {
+			result.ExitCode = 1
+		}
+		return result, err
+	}
+	return result, nil
+}
+
+func (e CLIExecutor) Logs(ctx context.Context, project core.Project, service string) (string, error) {
+	if project.Type == core.ProjectTypeStandalone {
+		containerID := ""
+		if service != "" {
+			for _, svc := range project.Services {
+				if svc.Name == service || svc.ContainerID == service {
+					containerID = svc.ContainerID
+					break
+				}
+			}
+		}
+		if containerID == "" && len(project.Services) > 0 {
+			containerID = project.Services[0].ContainerID
+		}
+		if containerID == "" {
+			return "", errors.New("standalone project has no container for logs")
+		}
+		result, err := e.Execute(ctx, Command{Name: "docker", Args: []string{"logs", "--tail", "300", containerID}})
+		return result.Output, err
+	}
+	args := composeArgs(project.ConfigFiles)
+	args = append(args, "logs", "--tail", "300")
+	if service != "" {
+		args = append(args, service)
+	}
+	result, err := e.Execute(ctx, Command{Name: "docker", Args: args, Dir: project.WorkingDir})
+	return result.Output, err
+}
+
+func (e CLIExecutor) SearchImages(ctx context.Context, term string) ([]SearchResult, error) {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return []SearchResult{}, nil
+	}
+	result, err := e.Execute(ctx, Command{Name: "docker", Args: []string{"search", "--limit", "10", "--format", "json", term}})
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(result.Output, "\n")
+	results := make([]SearchResult, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row struct {
+			Name        string `json:"Name"`
+			Description string `json:"Description"`
+			StarCount   string `json:"StarCount"`
+			Official    string `json:"IsOfficial"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			continue
+		}
+		stars, _ := strconv.Atoi(row.StarCount)
+		results = append(results, SearchResult{Name: row.Name, Description: row.Description, Stars: stars, Official: row.Official == "[OK]" || strings.EqualFold(row.Official, "true")})
+	}
+	return results, nil
+}
+
+func (e CLIExecutor) LocalImages(ctx context.Context) ([]LocalImage, error) {
+	result, err := e.Execute(ctx, Command{Name: "docker", Args: []string{"images", "--format", "json"}})
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(result.Output, "\n")
+	images := make([]LocalImage, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row struct {
+			Repository   string `json:"Repository"`
+			Tag          string `json:"Tag"`
+			ID           string `json:"ID"`
+			CreatedAt    string `json:"CreatedAt"`
+			CreatedSince string `json:"CreatedSince"`
+			Size         string `json:"Size"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			continue
+		}
+		created := row.CreatedSince
+		if created == "" {
+			created = row.CreatedAt
+		}
+		images = append(images, LocalImage{Repository: row.Repository, Tag: row.Tag, ID: row.ID, Created: created, Size: row.Size})
+	}
+	return images, nil
+}
+
+func CommandsForPlan(plan core.UpdatePlan) []Command {
+	commands := make([]Command, 0, len(plan.Commands))
+	for _, line := range plan.Commands {
+		commands = append(commands, parseDockerCommand(line, plan.WorkingDir))
+	}
+	return commands
+}
+
+func UpdateCommands(project core.Project, requiresBuild bool, removeOrphans bool) []Command {
+	if project.Type != core.ProjectTypeCompose || len(project.ConfigFiles) == 0 {
+		return nil
+	}
+	base := composeArgs(project.ConfigFiles)
+	commands := []Command{{Name: "docker", Args: append(append([]string{}, base...), "pull"), Dir: project.WorkingDir}}
+	if requiresBuild {
+		commands = append(commands, Command{Name: "docker", Args: append(append([]string{}, base...), "build"), Dir: project.WorkingDir})
+	}
+	upArgs := append(append([]string{}, base...), "up", "-d")
+	if removeOrphans {
+		upArgs = append(upArgs, "--remove-orphans")
+	}
+	commands = append(commands, Command{Name: "docker", Args: upArgs, Dir: project.WorkingDir})
+	return commands
+}
+
+func ComposeConfigCommand(project core.Project) Command {
+	args := composeArgs(project.ConfigFiles)
+	args = append(args, "config", "--format", "json")
+	return Command{Name: "docker", Args: args, Dir: project.WorkingDir}
+}
+
+func ComposeConfigRequiresBuild(output string) (bool, error) {
+	var config struct {
+		Services map[string]struct {
+			Build json.RawMessage `json:"build"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal([]byte(output), &config); err != nil {
+		return false, err
+	}
+	for _, service := range config.Services {
+		build := strings.TrimSpace(string(service.Build))
+		if build != "" && build != "null" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func LifecycleCommand(project core.Project, action string) Command {
+	if project.Type == core.ProjectTypeStandalone && len(project.Services) > 0 {
+		return Command{Name: "docker", Args: []string{action, project.Services[0].ContainerID}}
+	}
+	args := composeArgs(project.ConfigFiles)
+	args = append(args, action)
+	return Command{Name: "docker", Args: args, Dir: project.WorkingDir}
+}
+
+func ContainerLifecycleCommand(containerID string, action string) Command {
+	return Command{Name: "docker", Args: []string{action, strings.TrimSpace(containerID)}}
+}
+
+func ContainerLogsCommand(containerID string) Command {
+	return Command{Name: "docker", Args: []string{"logs", "--tail", "300", strings.TrimSpace(containerID)}}
+}
+
+func DeleteContainerCommand(containerID string) Command {
+	return Command{Name: "docker", Args: []string{"rm", "-f", strings.TrimSpace(containerID)}}
+}
+
+func DeleteProjectCommand(project core.Project) Command {
+	args := composeArgs(project.ConfigFiles)
+	args = append(args, "down")
+	return Command{Name: "docker", Args: args, Dir: project.WorkingDir}
+}
+
+func DeleteImageCommand(ref string, force bool) Command {
+	args := []string{"rmi"}
+	if force {
+		args = append(args, "-f")
+	}
+	args = append(args, strings.TrimSpace(ref))
+	return Command{Name: "docker", Args: args}
+}
+
+func composeArgs(files []string) []string {
+	args := []string{"compose"}
+	for _, file := range files {
+		args = append(args, "-f", file)
+	}
+	return args
+}
+
+func parseDockerCommand(line, dir string) Command {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return Command{}
+	}
+	return Command{Name: fields[0], Args: fields[1:], Dir: dir}
+}
+
+func quoteArg(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(arg, " \t\n'\"") {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+}

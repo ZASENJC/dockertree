@@ -1,0 +1,190 @@
+package docker
+
+import (
+	"errors"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"dockertree/internal/core"
+)
+
+type SearchResult struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Stars       int    `json:"stars"`
+	Official    bool   `json:"official"`
+}
+
+type LocalImage struct {
+	Repository string `json:"repository"`
+	Tag        string `json:"tag"`
+	ID         string `json:"id"`
+	Created    string `json:"created"`
+	Size       string `json:"size"`
+}
+
+func (i LocalImage) Ref() string {
+	if i.Repository == "" || i.Repository == "<none>" {
+		return i.ID
+	}
+	if i.Tag == "" || i.Tag == "<none>" {
+		return i.Repository
+	}
+	return i.Repository + ":" + i.Tag
+}
+
+type ContainerDeployRequest struct {
+	Name  string `json:"name"`
+	Image string `json:"image"`
+}
+
+type ComposeDeployRequest struct {
+	Name           string `json:"name"`
+	ComposePath    string `json:"composePath"`
+	ComposeContent string `json:"composeContent"`
+}
+
+func ContainerDeployPlan(req ContainerDeployRequest) (core.UpdatePlan, error) {
+	cmd, err := ValidatedContainerDeployCommand(req)
+	if err != nil {
+		return core.UpdatePlan{}, err
+	}
+	name := ""
+	if len(cmd.Args) >= 4 {
+		name = cmd.Args[3]
+	}
+	plan := core.UpdatePlan{ProjectID: "container:" + name, ProjectName: name, Commands: []string{cmd.String()}, CanDeploy: true}
+	plan.Warnings = append(plan.Warnings, ContainerImageWarnings(req.Image)...)
+	return plan, nil
+}
+
+func ValidatedContainerDeployCommand(req ContainerDeployRequest) (Command, error) {
+	req.Name = strings.TrimSpace(req.Name)
+	req.Image = strings.TrimSpace(req.Image)
+	if req.Image == "" {
+		return Command{}, errors.New("image name is required")
+	}
+	if req.Name == "" {
+		req.Name = DeriveContainerName(req.Image)
+	}
+	return ContainerDeployCommand(req), nil
+}
+
+func ContainerDeployCommand(req ContainerDeployRequest) Command {
+	return Command{Name: "docker", Args: []string{"run", "-d", "--name", strings.TrimSpace(req.Name), strings.TrimSpace(req.Image)}}
+}
+
+func DeriveContainerName(image string) string {
+	image = strings.TrimSpace(image)
+	if digestBase, _, ok := strings.Cut(image, "@"); ok {
+		image = digestBase
+	}
+	parts := strings.Split(strings.Trim(image, "/"), "/")
+	base := ""
+	if len(parts) > 0 {
+		base = parts[len(parts)-1]
+	}
+	if beforeTag, _, ok := strings.Cut(base, ":"); ok {
+		base = beforeTag
+	}
+	base = strings.ToLower(base)
+	invalid := regexp.MustCompile(`[^a-z0-9.-]+`)
+	base = invalid.ReplaceAllString(base, "-")
+	base = strings.Trim(base, "-.")
+	if base == "" {
+		return "container"
+	}
+	return base
+}
+
+func ImplicitLatestRef(image string) (string, bool) {
+	image = strings.TrimSpace(image)
+	if image == "" || strings.Contains(image, "@") {
+		return "", false
+	}
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon > lastSlash {
+		return "", false
+	}
+	return image + ":latest", true
+}
+
+func ContainerImageWarnings(image string) []string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return nil
+	}
+	warnings := []string{}
+	if ref, ok := ImplicitLatestRef(image); ok {
+		warnings = append(warnings, "镜像未指定标签，Docker 会按 "+ref+" 处理。")
+	}
+	if isBareDockerHubRef(image) {
+		name := imageBaseName(image)
+		warnings = append(warnings, "裸镜像名会解析到 Docker Hub 官方/library 命名空间，不会自动使用你的用户名或组织名；如果远端仓库在账号下，请输入 <用户名>/"+name+":latest。")
+	}
+	if len(warnings) > 0 {
+		warnings = append(warnings, "如果这是本地项目镜像，请先运行 docker build -t "+imageBuildRef(image)+" .，或改用本地镜像列表中的完整镜像名。")
+	}
+	return warnings
+}
+
+func isBareDockerHubRef(image string) bool {
+	image = strings.TrimSpace(image)
+	if image == "" || strings.Contains(image, "/") || strings.Contains(image, "@") {
+		return false
+	}
+	return true
+}
+
+func imageBaseName(image string) string {
+	image = strings.TrimSpace(image)
+	if digestBase, _, ok := strings.Cut(image, "@"); ok {
+		image = digestBase
+	}
+	parts := strings.Split(strings.Trim(image, "/"), "/")
+	base := image
+	if len(parts) > 0 {
+		base = parts[len(parts)-1]
+	}
+	if beforeTag, _, ok := strings.Cut(base, ":"); ok {
+		base = beforeTag
+	}
+	return base
+}
+
+func imageBuildRef(image string) string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return "container"
+	}
+	if strings.Contains(image, "@") {
+		return image
+	}
+	return strings.TrimSuffix(image, ":latest")
+}
+
+func ComposeDeployPlan(req ComposeDeployRequest) (core.UpdatePlan, error) {
+	cmd, err := ValidatedComposeDeployCommand(req)
+	if err != nil {
+		return core.UpdatePlan{}, err
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = filepath.Base(filepath.Dir(req.ComposePath))
+	}
+	return core.UpdatePlan{ProjectID: "compose:" + name, ProjectName: name, WorkingDir: filepath.Dir(req.ComposePath), Commands: []string{cmd.String()}, CanDeploy: true}, nil
+}
+
+func ValidatedComposeDeployCommand(req ComposeDeployRequest) (Command, error) {
+	path := strings.TrimSpace(req.ComposePath)
+	content := strings.TrimSpace(req.ComposeContent)
+	if path == "" {
+		return Command{}, errors.New("compose path is required")
+	}
+	if content == "" {
+		return Command{}, errors.New("compose content is required")
+	}
+	return Command{Name: "docker", Args: []string{"compose", "-f", path, "up", "-d"}, Dir: filepath.Dir(path)}, nil
+}

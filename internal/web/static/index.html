@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dockertree</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>Dockertree</h1>
+          <p>本地 Docker / Compose 管理</p>
+        </div>
+        <div class="auth">
+          <button id="themeToggle" class="secondary" type="button" aria-label="切换深色模式" title="切换深色模式">深色</button>
+          <input id="token" type="password" placeholder="Admin token" autocomplete="current-password" />
+          <button id="saveToken">保存</button>
+          <button id="scan">扫描</button>
+        </div>
+      </header>
+      <nav id="viewTabs" class="view-tabs" aria-label="页面切换">
+        <button class="secondary active" type="button" data-view="containers">容器</button>
+        <button class="secondary" type="button" data-view="projects">项目</button>
+        <button class="secondary" type="button" data-view="images">镜像</button>
+        <button class="secondary" type="button" data-view="deploy">部署</button>
+      </nav>
+      <pre id="operationOutput" class="operation-output">操作结果会显示在这里。</pre>
+      <section class="view-shell" aria-label="Docker 管理页面">
+        <section id="containersView" class="panel view-panel active" data-view-panel="containers">
+          <div class="panel-title">容器</div>
+          <div id="containers" class="entity-list"></div>
+          <div id="containerPagination" class="pagination"></div>
+        </section>
+        <section id="projectsView" class="panel view-panel hidden" data-view-panel="projects">
+          <div class="panel-title">项目</div>
+          <div id="projects" class="entity-list"></div>
+          <div id="projectPagination" class="pagination"></div>
+        </section>
+        <section id="imagesView" class="panel view-panel hidden" data-view-panel="images">
+          <div class="panel-title title-actions">
+            <span>镜像</span>
+            <button id="refreshLocalImages" class="secondary" type="button">刷新</button>
+          </div>
+          <div id="localImages" class="image-list"></div>
+          <div id="imagePagination" class="pagination"></div>
+        </section>
+        <section id="deployView" class="panel view-panel hidden" data-view-panel="deploy">
+          <div class="panel-title">部署</div>
+          <div class="deploy-body">
+            <div class="segmented" role="tablist" aria-label="部署方式">
+              <button id="deployModeImage" class="secondary active" type="button">镜像部署</button>
+              <button id="deployModeCompose" class="secondary" type="button">Compose 部署</button>
+            </div>
+            <form id="imageDeployForm" class="deploy-form">
+              <label>搜索镜像或输入镜像名<input id="imageQuery" name="imageQuery" placeholder="redis:7" /></label>
+              <details id="advancedContainerOptions">
+                <summary>高级选项</summary>
+                <label>自动容器名<input id="containerName" name="containerName" placeholder="自动生成" /></label>
+              </details>
+              <div class="actions inline-actions">
+                <button id="imageSearch" class="secondary" type="button">搜索镜像</button>
+                <button id="imagePreview" class="secondary" type="button">预览命令</button>
+                <button id="imageDeploy" type="button">部署</button>
+              </div>
+              <div id="imageSearchResults" class="search-results"></div>
+              <div id="imageSearchPagination" class="pagination"></div>
+            </form>
+            <form id="composeDeployForm" class="deploy-form hidden">
+              <div class="field-grid single-field-grid">
+                <label>项目名称<input id="composeName" name="composeName" placeholder="my-service" /></label>
+                <label>Compose 路径<input id="composePath" name="composePath" placeholder="/opt/stacks/my-service/compose.yml" /></label>
+              </div>
+              <label>Compose 内容<textarea id="composeContent" name="composeContent" spellcheck="false" placeholder="services:\n  web:\n    image: nginx:latest"></textarea></label>
+              <div class="actions inline-actions">
+                <button id="composePreview" class="secondary" type="button">预览命令</button>
+                <button id="composeDeploy" type="button">写入并部署</button>
+              </div>
+            </form>
+            <pre id="deployOutput">选择部署方式后预览命令。</pre>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
