@@ -277,7 +277,7 @@ done
 	writeExecutable(t, template, templateBody)
 
 	fakeGo := filepath.Join(fakeBin, "go")
-fakeGoBody := `#!/bin/sh
+	fakeGoBody := `#!/bin/sh
 set -eu
 printf '%s|%s\n' "$PWD" "$*" >> "${FAKE_GO_LOG:?}"
 case "$PWD" in
