@@ -106,23 +106,25 @@ func TestManagerInstallAndStartEnableLinuxAutostart(t *testing.T) {
 	h := newHarness(t)
 	fakeBin := filepath.Join(h.home, "fake-bin")
 	writeExecutable(t, filepath.Join(fakeBin, "uname"), "#!/bin/sh\nif [ \"${1:-}\" = \"-m\" ]; then echo x86_64; else echo Linux; fi\n")
+	writeExecutable(t, filepath.Join(fakeBin, "id"), "#!/bin/sh\ncase \"${1:-}\" in -u) echo 0 ;; -un) echo dockertree-test ;; *) exit 2 ;; esac\n")
 	systemctlLog := filepath.Join(h.home, "systemctl.log")
 	writeExecutable(t, filepath.Join(fakeBin, "systemctl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${FAKE_SYSTEMCTL_LOG:?}\"\n")
-	h.env = append(h.env, "FAKE_SYSTEMCTL_LOG="+systemctlLog)
+	systemdDir := filepath.Join(h.home, "systemd")
+	h.env = append(h.env, "FAKE_SYSTEMCTL_LOG="+systemctlLog, "DOCKERTREE_SYSTEMD_UNIT_DIR="+systemdDir)
 
 	result := h.run(t, "install")
 	if result.exitCode != 0 {
 		t.Fatalf("install failed: %s", result.output)
 	}
-	unitPath := filepath.Join(h.home, ".config", "systemd", "user", "dockertree.service")
+	unitPath := filepath.Join(systemdDir, "dockertree.service")
 	unit := readTrimmed(t, unitPath)
-	for _, want := range []string{h.managerPath(t), "start", "WantedBy=default.target"} {
+	for _, want := range []string{h.managerPath(t), "start", "User=dockertree-test", "Environment=\"HOME=" + h.home + "\"", "WantedBy=multi-user.target"} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("systemd unit missing %q: %s", want, unit)
 		}
 	}
-	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "--user daemon-reload") || !strings.Contains(log, "--user enable dockertree.service") {
-		t.Fatalf("install did not enable the systemd user service: %s", log)
+	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "daemon-reload") || !strings.Contains(log, "enable dockertree.service") || strings.Contains(log, "--user") {
+		t.Fatalf("install did not enable the system service: %s", log)
 	}
 	if !strings.Contains(result.output, "已启用设备重启后自动启动") {
 		t.Fatalf("install did not report autostart: %s", result.output)
@@ -141,8 +143,8 @@ func TestManagerInstallAndStartEnableLinuxAutostart(t *testing.T) {
 	if _, err := os.Stat(unitPath); err != nil {
 		t.Fatalf("start did not restore the systemd unit: %v", err)
 	}
-	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "--user enable dockertree.service") {
-		t.Fatalf("start did not re-enable the systemd user service: %s", log)
+	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "enable dockertree.service") || strings.Contains(log, "--user enable") {
+		t.Fatalf("start did not re-enable the system service: %s", log)
 	}
 
 	if result := h.run(t, "uninstall"); result.exitCode != 0 {
@@ -151,8 +153,8 @@ func TestManagerInstallAndStartEnableLinuxAutostart(t *testing.T) {
 	if _, err := os.Stat(unitPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("uninstall left the systemd unit behind: %v", err)
 	}
-	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "--user disable dockertree.service") {
-		t.Fatalf("uninstall did not disable the systemd user service: %s", log)
+	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "disable dockertree.service") || strings.Contains(log, "--user disable") {
+		t.Fatalf("uninstall did not disable the system service: %s", log)
 	}
 }
 
