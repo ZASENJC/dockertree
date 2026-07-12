@@ -422,6 +422,72 @@ func TestStandaloneManagerRefreshesItselfFromGitHub(t *testing.T) {
 	assertExecutable(t, h.manager)
 }
 
+func TestStandaloneManagerUsesPrivilegeOnlyToReplaceRootOwnedScript(t *testing.T) {
+	h := newHarness(t)
+	configureFakeGit(t, h)
+	managerDir := filepath.Join(h.home, "root-owned-manager")
+	if err := os.MkdirAll(managerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(managerDir, 0o755) })
+	managerData, err := os.ReadFile(managerPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.manager = filepath.Join(managerDir, "dockertree.sh")
+	writeExecutable(t, h.manager, string(managerData))
+	managerTemplate := filepath.Join(h.home, "github-dockertree.sh")
+	writeExecutable(t, managerTemplate, string(managerData)+"\n# privileged-refresh\n")
+	sudoLog := filepath.Join(h.home, "sudo.log")
+	fakeSudo := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${FAKE_SUDO_LOG:?}"
+case "${1:-}" in
+  cp)
+    target=""
+    for arg in "$@"; do target="$arg"; done
+    chmod u+w "$(dirname "$target")"
+    ;;
+esac
+exec "$@"
+`
+	writeExecutable(t, filepath.Join(h.home, "fake-bin", "sudo"), fakeSudo)
+	h.env = append(h.env, "FAKE_MANAGER_TEMPLATE="+managerTemplate, "FAKE_SUDO_LOG="+sudoLog)
+	if err := os.Chmod(managerDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+
+	result := h.run(t, "install")
+	if result.exitCode != 0 {
+		t.Fatalf("install with a root-owned manager failed: %s", result.output)
+	}
+	refreshed, err := os.ReadFile(h.manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(refreshed), "# privileged-refresh") {
+		t.Fatalf("manager was not refreshed through the privileged replacement: %s", result.output)
+	}
+	if log := readTrimmed(t, sudoLog); !strings.Contains(log, "cp ") || !strings.Contains(log, h.manager) {
+		t.Fatalf("manager replacement did not use scoped privilege: %s", log)
+	}
+}
+
+func TestManagerRejectsSudoForUserScopedCommands(t *testing.T) {
+	for _, command := range []string{"install", "update", "start", "restart"} {
+		t.Run(command, func(t *testing.T) {
+			h := newHarness(t)
+			writeExecutable(t, filepath.Join(h.home, "fake-bin", "id"), "#!/bin/sh\nif [ \"${1:-}\" = \"-u\" ]; then echo 0; else echo root; fi\n")
+			h.env = append(h.env, "SUDO_USER=sam")
+
+			result := h.run(t, command)
+			if result.exitCode == 0 || !strings.Contains(result.output, "不要使用 sudo") {
+				t.Fatalf("%s should reject whole-script sudo: code=%d output=%s", command, result.exitCode, result.output)
+			}
+		})
+	}
+}
+
 func TestReadmeDocumentsSingleScriptBootstrap(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(projectRoot(t), "README.md"))
 	if err != nil {
