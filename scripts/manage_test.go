@@ -179,6 +179,20 @@ func TestManagerDoctorReportsCompleteRuntime(t *testing.T) {
 	}
 }
 
+func TestManagerDoctorDoesNotStartDockerDaemon(t *testing.T) {
+	h := newHarness(t)
+	openLog := filepath.Join(h.home, "open.log")
+	writeExecutable(t, filepath.Join(h.home, "fake-bin", "open"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${FAKE_OPEN_LOG:?}\"\n")
+	h.env = append(h.env, "FAKE_DOCKER_INFO_FAIL=1", "FAKE_OPEN_LOG="+openLog)
+	result := h.run(t, "doctor")
+	if result.exitCode != 0 || !strings.Contains(result.output, "Docker daemon 尚未运行") {
+		t.Fatalf("doctor should report an inactive daemon without failing: code=%d output=%s", result.exitCode, result.output)
+	}
+	if _, err := os.Stat(openLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("doctor attempted to start Docker Desktop: %v", err)
+	}
+}
+
 func TestManagerInstallAutoProvisionsMissingLinuxRuntime(t *testing.T) {
 	h := newMissingLinuxRuntimeHarness(t)
 	result := h.run(t, "install")
@@ -196,6 +210,25 @@ func TestManagerInstallAutoProvisionsMissingLinuxRuntime(t *testing.T) {
 		if !strings.Contains(result.output, want) {
 			t.Fatalf("install output missing %q: %s", want, result.output)
 		}
+	}
+}
+
+func TestManagerInstallFetchesGitHubSourceOutsideCheckout(t *testing.T) {
+	h := newHarness(t)
+	configureFakeGit(t, h)
+	h.env = append(h.env, "DOCKERTREE_SOURCE_DIR="+filepath.Join(h.home, "missing-source"))
+	result := h.run(t, "install")
+	if result.exitCode != 0 {
+		t.Fatalf("install should fetch source from GitHub: %s", result.output)
+	}
+	gitLog := readTrimmed(t, filepath.Join(h.home, "git.log"))
+	for _, want := range []string{"clone", "--depth 1", "--branch main", "https://github.com/ZASENJC/dockertree.git"} {
+		if !strings.Contains(gitLog, want) {
+			t.Fatalf("GitHub install command missing %q: %s", want, gitLog)
+		}
+	}
+	if !strings.Contains(result.output, "正在从 GitHub 获取 Dockertree") {
+		t.Fatalf("install should explain its GitHub source: %s", result.output)
 	}
 }
 
@@ -370,7 +403,10 @@ case "${1:-}" in
       echo "Docker Compose version v2.35.0"
     fi
     ;;
-  info) exit 0 ;;
+  info)
+    if [ "${FAKE_DOCKER_INFO_FAIL:-0}" = "1" ]; then exit 1; fi
+    exit 0
+    ;;
 esac
 `
 	writeExecutable(t, fakeDocker, fakeDockerBody)
