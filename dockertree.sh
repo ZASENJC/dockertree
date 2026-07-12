@@ -232,6 +232,14 @@ report_docker_daemon() {
   fi
 }
 
+require_docker_access() {
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "错误: 无法访问 Docker daemon；请确认 Docker 已启动，并确保当前用户有 Docker 访问权限。" >&2
+  return 1
+}
+
 validate_github_settings() {
   case "$GITHUB_REPOSITORY" in
     https://github.com/*.git) ;;
@@ -239,6 +247,34 @@ validate_github_settings() {
   esac
   case "$GITHUB_REF" in
     ''|-*|*..*|*[!A-Za-z0-9._/-]*) fail "无效的 GitHub 分支或标签: $GITHUB_REF" ;;
+  esac
+}
+
+canonical_dir() {
+  (CDPATH= cd "$1" 2>/dev/null && pwd -P)
+}
+
+validate_purge_target() {
+  case "$CONFIG_DIR" in
+    ''|/|"$HOME"|"$INSTALL_DIR"|"$STATE_DIR")
+      fail "拒绝删除不安全的配置目录: $CONFIG_DIR"
+      ;;
+  esac
+  if [ ! -d "$CONFIG_DIR" ]; then
+    return 0
+  fi
+  config_real=$(canonical_dir "$CONFIG_DIR") || fail "无法解析配置目录: $CONFIG_DIR"
+  script_dir_real=$(canonical_dir "$SCRIPT_DIR") || fail "无法解析管理脚本目录: $SCRIPT_DIR"
+  home_real=$(canonical_dir "$HOME") || home_real=$HOME
+  case "$config_real" in
+    ''|/|"$home_real")
+      fail "拒绝删除不安全的配置目录: $CONFIG_DIR"
+      ;;
+  esac
+  case "$script_dir_real/" in
+    "$config_real/"*)
+      fail "拒绝删除包含管理脚本的配置目录: $CONFIG_DIR"
+      ;;
   esac
 }
 
@@ -427,10 +463,10 @@ install_app() {
 }
 
 update_app() {
-  ensure_runtime git go docker compose
   if [ ! -x "$BINARY" ]; then
     fail "尚未安装，请先运行 '$0 install'"
   fi
+  ensure_runtime git go docker compose
   validate_github_settings
 
   mkdir -p "$INSTALL_DIR" "$STATE_DIR" || fail "无法创建更新目录"
@@ -461,6 +497,7 @@ update_app() {
   was_running=false
   if running_pid >/dev/null; then
     was_running=true
+    require_docker_access || return 1
     stop_app || return $?
   fi
 
@@ -502,7 +539,6 @@ update_app() {
 }
 
 start_app() {
-  ensure_runtime docker compose
   validate_timeout DOCKERTREE_START_TIMEOUT "$START_TIMEOUT"
   if pid=$(running_pid); then
     echo "Dockertree 已在运行，PID: $pid"
@@ -511,6 +547,8 @@ start_app() {
   if [ ! -x "$BINARY" ]; then
     fail "尚未安装，请先运行 '$0 install'"
   fi
+  ensure_runtime docker compose
+  require_docker_access || return 1
 
   mkdir -p "$STATE_DIR" "$CONFIG_DIR" || fail "无法创建运行目录"
   touch "$LOG_FILE" || fail "无法写入日志: $LOG_FILE"
@@ -614,16 +652,15 @@ uninstall_app() {
     return 2
   fi
 
+  if [ "$purge" = true ]; then
+    validate_purge_target
+  fi
+
   stop_app || return $?
   rm -f "$BINARY" "$PID_FILE" "$LOG_FILE" || fail "卸载文件失败"
   rmdir "$STATE_DIR" 2>/dev/null || true
 
   if [ "$purge" = true ]; then
-    case "$CONFIG_DIR" in
-      ''|/|"$HOME"|"$INSTALL_DIR"|"$STATE_DIR")
-        fail "拒绝删除不安全的配置目录: $CONFIG_DIR"
-        ;;
-    esac
     rm -rf "$CONFIG_DIR" || fail "删除配置目录失败: $CONFIG_DIR"
     echo "Dockertree 已卸载，配置已删除: $CONFIG_DIR"
     return 0
