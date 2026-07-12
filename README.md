@@ -58,6 +58,8 @@ chmod 755 dockertree.sh
 
 `install` 和 `start` 会自动注册设备重启后的启动任务：Linux 使用系统级 `/etc/systemd/system/dockertree.service`，并以执行安装的普通用户身份运行 Dockertree，因此不依赖登录会话或用户级 D-Bus；安装 unit 和执行 `systemctl enable` 时可能要求输入 `sudo` 密码。macOS 使用 `~/Library/LaunchAgents/io.github.zasenjc.dockertree.plist`，在用户登录后自动启动。Docker 尚未就绪时，两种任务都会延迟后重试。`uninstall` 会同时禁用并删除这些自启动配置。请使用普通用户执行管理脚本，不要对整个脚本使用 `sudo`。
 
+管理脚本放在 `/opt` 等普通用户不可写目录时，安装和更新会先在用户状态目录暂存新版脚本，仅在替换管理脚本文件时请求 `sudo`。不要使用 `sudo ./dockertree.sh install`、`update`、`start` 或 `restart`，否则程序和配置会落到 `/root`；脚本会主动拒绝这些调用。为迁移旧的 root 安装，可以先执行 `sudo ./dockertree.sh stop` 和 `sudo ./dockertree.sh uninstall`，再以普通用户重新执行 `./dockertree.sh install` 和 `./dockertree.sh start`。
+
 可通过 `DOCKERTREE_INSTALL_DIR`、`DOCKERTREE_STATE_DIR` 或 `DOCKERTREE_CONFIG_DIR` 覆盖这些路径。安装或启动时如果监听端口已被占用，脚本会提示输入新端口并保存到 `config.yaml`；非交互环境可通过 `DOCKERTREE_PORT=28680 ./dockertree.sh start` 指定并保存端口。
 
 环境自动补全支持 macOS Homebrew，以及 Linux 的 APT、DNF、YUM、Pacman 和 Zypper。macOS 未安装 Homebrew 时，脚本会停止并提示先安装 Homebrew；Linux 安装系统软件时可能要求输入 `sudo` 密码。Docker 安装完成后，脚本会尝试启动 Docker Desktop 或 Docker 服务；如果 daemon 尚未就绪，Dockertree 仍会完成安装并给出提示。`start` 会要求 `docker info` 成功，避免启动一个无法管理 Docker 的实例；Linux 用户还需确保当前账号具有 Docker socket 访问权限。

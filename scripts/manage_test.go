@@ -473,6 +473,46 @@ exec "$@"
 	}
 }
 
+func TestStandaloneManagerRejectsPrivilegedSymlinkReplacement(t *testing.T) {
+	h := newHarness(t)
+	configureFakeGit(t, h)
+	managerDir := filepath.Join(h.home, "protected-manager")
+	if err := os.MkdirAll(managerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(managerDir, 0o755) })
+	managerData, err := os.ReadFile(managerPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(h.home, "manager-target.sh")
+	writeExecutable(t, victim, string(managerData))
+	h.manager = filepath.Join(managerDir, "dockertree.sh")
+	if err := os.Symlink(victim, h.manager); err != nil {
+		t.Fatal(err)
+	}
+	managerTemplate := filepath.Join(h.home, "github-dockertree.sh")
+	writeExecutable(t, managerTemplate, string(managerData)+"\n# must-not-overwrite\n")
+	fakeSudo := "#!/bin/sh\ntarget=\"\"\nfor arg in \"$@\"; do target=\"$arg\"; done\nchmod u+w \"$(dirname \"$target\")\"\nexec \"$@\"\n"
+	writeExecutable(t, filepath.Join(h.home, "fake-bin", "sudo"), fakeSudo)
+	h.env = append(h.env, "FAKE_MANAGER_TEMPLATE="+managerTemplate)
+	if err := os.Chmod(managerDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+
+	result := h.run(t, "install")
+	if result.exitCode == 0 || !strings.Contains(result.output, "符号链接") {
+		t.Fatalf("privileged manager replacement should reject a symlink: code=%d output=%s", result.exitCode, result.output)
+	}
+	data, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "# must-not-overwrite") {
+		t.Fatal("privileged manager replacement followed and overwrote a symlink target")
+	}
+}
+
 func TestManagerRejectsSudoForUserScopedCommands(t *testing.T) {
 	for _, command := range []string{"install", "update", "start", "restart"} {
 		t.Run(command, func(t *testing.T) {

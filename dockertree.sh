@@ -295,7 +295,8 @@ stage_manager_update() {
     echo "错误: GitHub 源码中缺少 dockertree.sh" >&2
     return 1
   fi
-  MANAGER_UPDATE_TMP=$SCRIPT_DIR/.dockertree-manager-$$
+  mkdir -p "$STATE_DIR" || return 1
+  MANAGER_UPDATE_TMP=$STATE_DIR/.dockertree-manager-$$
   if ! cp "$manager_source" "$MANAGER_UPDATE_TMP"; then
     MANAGER_UPDATE_TMP=""
     return 1
@@ -311,13 +312,42 @@ activate_manager_update() {
   if [ -z "$MANAGER_UPDATE_TMP" ]; then
     return 0
   fi
-  if ! mv -f "$MANAGER_UPDATE_TMP" "$SCRIPT_PATH"; then
+  if [ -w "$SCRIPT_DIR" ]; then
+    if ! mv -f "$MANAGER_UPDATE_TMP" "$SCRIPT_PATH"; then
+      rm -f "$MANAGER_UPDATE_TMP"
+      MANAGER_UPDATE_TMP=""
+      return 1
+    fi
+  else
+    if [ -L "$SCRIPT_PATH" ]; then
+      echo "错误: 拒绝以提权方式更新符号链接管理脚本: $SCRIPT_PATH" >&2
+      rm -f "$MANAGER_UPDATE_TMP"
+      MANAGER_UPDATE_TMP=""
+      return 1
+    fi
+    if [ ! -f "$SCRIPT_PATH" ]; then
+      echo "错误: 无法确认受保护的管理脚本是普通文件: $SCRIPT_PATH" >&2
+      rm -f "$MANAGER_UPDATE_TMP"
+      MANAGER_UPDATE_TMP=""
+      return 1
+    fi
+    if ! run_privileged cp "$MANAGER_UPDATE_TMP" "$SCRIPT_PATH" ||
+      ! run_privileged chmod 755 "$SCRIPT_PATH"; then
+      rm -f "$MANAGER_UPDATE_TMP"
+      MANAGER_UPDATE_TMP=""
+      return 1
+    fi
     rm -f "$MANAGER_UPDATE_TMP"
-    MANAGER_UPDATE_TMP=""
-    return 1
   fi
   MANAGER_UPDATE_TMP=""
   echo "管理脚本已同步更新: $SCRIPT_PATH"
+}
+
+reject_whole_script_sudo() {
+  if [ "$(id -u 2>/dev/null)" = "0" ] && [ -n "${SUDO_USER:-}" ]; then
+    echo "错误: 不要使用 sudo 运行 '$0 $1'；请以普通用户执行，脚本只会在安装 systemd 服务或更新受保护的管理脚本时请求 sudo。" >&2
+    return 1
+  fi
 }
 
 ensure_runtime() {
@@ -919,6 +949,11 @@ uninstall_app() {
 }
 
 command=${1:-}
+case "$command" in
+  install|update|start|restart)
+    reject_whole_script_sudo "$command" || exit 1
+    ;;
+esac
 case "$command" in
   doctor)
     if [ "$#" -ne 1 ]; then
