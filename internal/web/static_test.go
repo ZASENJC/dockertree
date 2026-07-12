@@ -320,6 +320,38 @@ func TestProjectDirectoryAndComposeEditingWorkflowAssets(t *testing.T) {
 	}
 }
 
+func TestComposeEditorProtectsExistingProjectsAndPendingChanges(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(indexData)
+	js := string(appData)
+	for _, want := range []string{
+		"composeEditingProjectId", "projectId: state.composeEditingProjectId",
+		"composeDirty", "confirmDiscardComposeChanges", "beforeunload",
+		"projectSettingsReady", "setProjectSettingsEnabled",
+		"scanPromise", "queueAfterCurrent", "scanInventory({ queueAfterCurrent: true })",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("safe Compose workflow missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		`id="projectRoot" value="/opt" placeholder="/opt" disabled`,
+		`id="scanPaths" class="compact-textarea" spellcheck="false" placeholder="/opt" disabled`,
+		`id="saveProjectSettings" type="button" disabled`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("project settings loading guard missing %q", want)
+		}
+	}
+}
+
 func TestLocalImagesUIAssets(t *testing.T) {
 	indexData, err := Assets.ReadFile("static/index.html")
 	if err != nil {

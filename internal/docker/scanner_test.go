@@ -39,6 +39,33 @@ func TestScannerIndexesComposeFilesFromConfiguredScanPaths(t *testing.T) {
 	}
 }
 
+func TestScannerSkipsSymlinkedComposeFiles(t *testing.T) {
+	root := t.TempDir()
+	appDir := filepath.Join(root, "myapp")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "compose.yml")
+	if err := os.WriteFile(target, []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(appDir, "compose.yml")); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	runner := fakeRunner{
+		"compose ls --format json":  `[]`,
+		"ps -a --format {{json .}}": ``,
+	}
+
+	projects, err := NewScanner(runner, []string{root}).Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("scanner indexed a symlinked compose file: %#v", projects)
+	}
+}
+
 func TestScannerAppliesUpdatedScanPathsWithoutRestart(t *testing.T) {
 	root := t.TempDir()
 	appDir := filepath.Join(root, "group", "myapp")
