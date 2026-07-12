@@ -123,6 +123,9 @@ func TestManagerInstallAndStartEnableLinuxAutostart(t *testing.T) {
 			t.Fatalf("systemd unit missing %q: %s", want, unit)
 		}
 	}
+	if strings.Contains(unit, "WorkingDirectory=") {
+		t.Fatalf("systemd unit should not require a working directory: %s", unit)
+	}
 	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "daemon-reload") || !strings.Contains(log, "enable dockertree.service") || strings.Contains(log, "--user") {
 		t.Fatalf("install did not enable the system service: %s", log)
 	}
