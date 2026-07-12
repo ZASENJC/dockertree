@@ -28,21 +28,11 @@ Dockertree 是一个用于管理 Docker 和 Docker Compose 项目的轻量级本
 
 ## 脚本管理
 
-首次安装可以只下载管理脚本。脚本会检查 Git、Go 1.23+、Docker CLI 和 Docker Compose，缺失时根据操作系统自动安装，然后直接从 GitHub 获取源码并构建：
+Dockertree 只需要一个 `dockertree.sh` 管理脚本。脚本会检查 Git、Go 1.23+、Docker CLI 和 Docker Compose，缺失时根据操作系统自动安装，然后直接从 GitHub 获取源码并构建，不需要手动克隆仓库：
 
 ```bash
-mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/ZASENJC/dockertree/main/dockertree.sh -o ~/.local/bin/dockertreectl
-chmod 755 ~/.local/bin/dockertreectl
-~/.local/bin/dockertreectl install
-~/.local/bin/dockertreectl start
-```
-
-也可以先克隆仓库，再使用仓库根目录下的脚本：
-
-```bash
-git clone https://github.com/ZASENJC/dockertree.git
-cd dockertree
+curl -fsSL https://raw.githubusercontent.com/ZASENJC/dockertree/main/dockertree.sh -o dockertree.sh
+chmod 755 dockertree.sh
 ./dockertree.sh install
 ./dockertree.sh start
 ```
@@ -68,7 +58,9 @@ cd dockertree
 
 `doctor` 只检查环境，不安装软件或启动 Docker。设置 `DOCKERTREE_AUTO_INSTALL=0` 可以关闭 `install`、`update` 和 `start` 的自动环境补全。
 
-`./dockertree.sh update` 会直接克隆 GitHub 仓库 `https://github.com/ZASENJC/dockertree.git` 的 `main` 分支，在临时目录完成构建后替换已安装的二进制。它不会修改当前源码目录，也不会覆盖配置；如果 Dockertree 原本正在运行，更新成功后会自动重启。GitHub 获取或编译失败时会保留当前二进制和运行中的进程。更新来源可通过 `DOCKERTREE_GITHUB_REPOSITORY` 和 `DOCKERTREE_GITHUB_REF` 覆盖。
+`./dockertree.sh install` 和 `./dockertree.sh update` 都会直接从 GitHub 仓库 `https://github.com/ZASENJC/dockertree.git` 获取源码，在临时目录完成构建，并同步刷新 `dockertree.sh` 自身。源码临时目录会在操作结束后删除。更新不会覆盖配置；如果 Dockertree 原本正在运行，更新成功后会自动重启。GitHub 获取或编译失败时会保留当前二进制和运行中的进程。更新来源可通过 `DOCKERTREE_GITHUB_REPOSITORY` 和 `DOCKERTREE_GITHUB_REF` 覆盖。
+
+`./dockertree.sh uninstall` 会删除已安装程序和运行状态，但保留这个管理脚本；使用 `--purge --yes` 时还会删除 Dockertree 配置。之后仍可使用同一个 `dockertree.sh install` 重新安装。
 
 ## 运行
 

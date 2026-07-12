@@ -3,6 +3,8 @@
 set -u
 
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+SCRIPT_BASENAME=$(basename "$0")
+SCRIPT_PATH=$SCRIPT_DIR/$SCRIPT_BASENAME
 SOURCE_DIR=${DOCKERTREE_SOURCE_DIR:-$SCRIPT_DIR}
 GITHUB_REPOSITORY=${DOCKERTREE_GITHUB_REPOSITORY:-https://github.com/ZASENJC/dockertree.git}
 GITHUB_REF=${DOCKERTREE_GITHUB_REF:-main}
@@ -23,6 +25,15 @@ STOP_TIMEOUT=${DOCKERTREE_STOP_TIMEOUT:-10}
 AUTO_INSTALL=${DOCKERTREE_AUTO_INSTALL:-1}
 MIN_GO_MAJOR=1
 MIN_GO_MINOR=23
+STANDALONE_MANAGER=false
+MANAGER_UPDATE_TMP=""
+case "$SCRIPT_BASENAME" in
+  *.sh)
+    if [ ! -f "$SCRIPT_DIR/go.mod" ] || [ ! -d "$SCRIPT_DIR/cmd/dockertree" ]; then
+      STANDALONE_MANAGER=true
+    fi
+    ;;
+esac
 
 usage() {
   cat <<EOF
@@ -231,6 +242,41 @@ validate_github_settings() {
   esac
 }
 
+stage_manager_update() {
+  MANAGER_UPDATE_TMP=""
+  if [ "$STANDALONE_MANAGER" != true ]; then
+    return 0
+  fi
+  manager_source=$1/dockertree.sh
+  if [ ! -f "$manager_source" ]; then
+    echo "错误: GitHub 源码中缺少 dockertree.sh" >&2
+    return 1
+  fi
+  MANAGER_UPDATE_TMP=$SCRIPT_DIR/.dockertree-manager-$$
+  if ! cp "$manager_source" "$MANAGER_UPDATE_TMP"; then
+    MANAGER_UPDATE_TMP=""
+    return 1
+  fi
+  chmod 755 "$MANAGER_UPDATE_TMP" || {
+    rm -f "$MANAGER_UPDATE_TMP"
+    MANAGER_UPDATE_TMP=""
+    return 1
+  }
+}
+
+activate_manager_update() {
+  if [ -z "$MANAGER_UPDATE_TMP" ]; then
+    return 0
+  fi
+  if ! mv -f "$MANAGER_UPDATE_TMP" "$SCRIPT_PATH"; then
+    rm -f "$MANAGER_UPDATE_TMP"
+    MANAGER_UPDATE_TMP=""
+    return 1
+  fi
+  MANAGER_UPDATE_TMP=""
+  echo "管理脚本已同步更新: $SCRIPT_PATH"
+}
+
 ensure_runtime() {
   case "$AUTO_INSTALL" in
     0|1) ;;
@@ -361,14 +407,16 @@ install_app() {
   fi
 
   build_tmp=$INSTALL_DIR/.dockertree-build-$$
-  trap 'rm -f "$build_tmp"; if [ -n "$install_checkout" ]; then rm -rf "$install_checkout"; fi' EXIT HUP INT TERM
+  trap 'rm -f "$build_tmp" "$MANAGER_UPDATE_TMP"; if [ -n "$install_checkout" ]; then rm -rf "$install_checkout"; fi' EXIT HUP INT TERM
 
   echo "正在编译 Dockertree..."
   if ! (cd "$install_source" && go build -trimpath -ldflags "-s -w" -o "$build_tmp" ./cmd/dockertree); then
     fail "编译失败"
   fi
+  stage_manager_update "$install_source" || fail "无法暂存新版管理脚本"
   chmod 755 "$build_tmp" || fail "无法设置程序权限"
   mv -f "$build_tmp" "$BINARY" || fail "无法安装程序到 $BINARY"
+  activate_manager_update || fail "程序已安装，但管理脚本更新失败"
   if [ -n "$install_checkout" ]; then
     rm -rf "$install_checkout"
   fi
@@ -391,7 +439,7 @@ update_app() {
   update_candidate=$update_dir/dockertree
   install_tmp=$INSTALL_DIR/.dockertree-update-$$
   previous_binary=$INSTALL_DIR/.dockertree-previous-$$
-  trap 'rm -rf "$update_dir"; rm -f "$install_tmp"' EXIT HUP INT TERM
+  trap 'rm -rf "$update_dir"; rm -f "$install_tmp" "$MANAGER_UPDATE_TMP"' EXIT HUP INT TERM
 
   echo "正在从 GitHub 获取 Dockertree ($GITHUB_REF)..."
   if ! git clone --depth 1 --branch "$GITHUB_REF" --single-branch "$GITHUB_REPOSITORY" "$update_source"; then
@@ -405,6 +453,7 @@ update_app() {
   if ! (cd "$update_source" && go build -trimpath -ldflags "-s -w" -o "$update_candidate" ./cmd/dockertree); then
     fail "编译失败，已保留当前版本"
   fi
+  stage_manager_update "$update_source" || fail "无法暂存新版管理脚本"
   chmod 755 "$update_candidate" || fail "无法设置更新程序权限"
   cp "$update_candidate" "$install_tmp" || fail "无法暂存更新程序"
   chmod 755 "$install_tmp" || fail "无法设置更新程序权限"
@@ -440,6 +489,8 @@ update_app() {
     fi
     return 1
   fi
+
+  activate_manager_update || fail "程序已更新，但管理脚本更新失败"
 
   rm -f "$previous_binary"
   rm -rf "$update_dir"
