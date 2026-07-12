@@ -92,11 +92,19 @@ func (e CLIExecutor) CheckUpdate(ctx context.Context, project core.Project) (cor
 	}
 	check.Status = ClassifyUpdateOutput(result.Output)
 	check.Versions = e.updateVersions(ctx, project)
+	allDigestsComparable := len(check.Versions) > 0
 	for _, version := range check.Versions {
+		if !isImageDigest(version.Current) || !isImageDigest(version.Available) {
+			allDigestsComparable = false
+			continue
+		}
 		if isDifferentDigest(version.Current, version.Available) {
 			check.Status = "available"
-			break
+			return check, nil
 		}
+	}
+	if allDigestsComparable {
+		check.Status = "current"
 	}
 	return check, nil
 }
@@ -140,7 +148,11 @@ func parseRemoteImageDigest(output string) string {
 func isDifferentDigest(current, available string) bool {
 	current = strings.TrimSpace(current)
 	available = strings.TrimSpace(available)
-	return strings.HasPrefix(current, "sha256:") && strings.HasPrefix(available, "sha256:") && current != available
+	return isImageDigest(current) && isImageDigest(available) && current != available
+}
+
+func isImageDigest(value string) bool {
+	return strings.HasPrefix(strings.TrimSpace(value), "sha256:")
 }
 
 func ClassifyUpdateOutput(output string) string {

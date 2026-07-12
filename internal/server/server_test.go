@@ -659,6 +659,96 @@ func TestContainerUpdateRejectsStandaloneContainers(t *testing.T) {
 	}
 }
 
+func TestContainerUpdateEndpointsReturnUsefulFailures(t *testing.T) {
+	project := core.Project{
+		ID: "compose:app", Name: "app", Type: core.ProjectTypeCompose, WorkingDir: "/srv/app",
+		ConfigFiles: []string{"/srv/app/compose.yml"},
+		Services:    []core.Service{{Name: "web", ContainerID: "web123", Image: "registry/web:latest"}},
+	}
+	authorizedRequest := func(method, path string) *http.Request {
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		return req
+	}
+
+	t.Run("missing container", func(t *testing.T) {
+		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, &fakeExecutor{}).Handler()
+		for _, action := range []string{"check-update", "deploy"} {
+			r := httptest.NewRecorder()
+			h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/missing/actions/"+action))
+			if r.Code != http.StatusNotFound {
+				t.Fatalf("%s status=%d body=%s", action, r.Code, r.Body.String())
+			}
+		}
+	})
+
+	t.Run("inventory load failure", func(t *testing.T) {
+		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{loadErr: errors.New("inventory boom")}, fakeScanner{}, &fakeExecutor{}).Handler()
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/web123/actions/check-update"))
+		if r.Code != http.StatusInternalServerError || !strings.Contains(r.Body.String(), "inventory boom") {
+			t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+		}
+	})
+
+	t.Run("check command failure", func(t *testing.T) {
+		exec := &fakeExecutor{err: errors.New("dry run failed"), failCall: 1}
+		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, exec).Handler()
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/web123/actions/check-update"))
+		if r.Code != http.StatusInternalServerError || !strings.Contains(r.Body.String(), "dry run failed") {
+			t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+		}
+	})
+
+	t.Run("compose inspection failure", func(t *testing.T) {
+		exec := &fakeExecutor{err: errors.New("config failed"), failCall: 1}
+		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, exec).Handler()
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/web123/actions/deploy"))
+		if r.Code != http.StatusInternalServerError || !strings.Contains(r.Body.String(), "config failed") {
+			t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+		}
+	})
+
+	t.Run("service missing from compose config", func(t *testing.T) {
+		exec := &fakeExecutor{outputs: map[string]string{
+			"docker compose -f /srv/app/compose.yml config --format json": `{"services":{"other":{"image":"busybox"}}}`,
+		}}
+		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, exec).Handler()
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/web123/actions/deploy"))
+		if r.Code != http.StatusInternalServerError || !strings.Contains(r.Body.String(), `compose service \"web\" was not found`) {
+			t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+		}
+	})
+
+	t.Run("service deploy command failure", func(t *testing.T) {
+		exec := &fakeExecutor{
+			err: errors.New("pull failed"), failCall: 2,
+			outputs: map[string]string{"docker compose -f /srv/app/compose.yml config --format json": `{"services":{"web":{"image":"registry/web:latest"}}}`},
+		}
+		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, exec).Handler()
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/web123/actions/deploy"))
+		if r.Code != http.StatusInternalServerError || !strings.Contains(r.Body.String(), "pull failed") {
+			t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+		}
+	})
+
+	t.Run("inventory refresh failure", func(t *testing.T) {
+		exec := &fakeExecutor{outputs: map[string]string{
+			"docker compose -f /srv/app/compose.yml config --format json": `{"services":{"web":{"image":"registry/web:latest"}}}`,
+		}}
+		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{err: errors.New("refresh failed")}, exec).Handler()
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/web123/actions/deploy"))
+		if r.Code != http.StatusInternalServerError || !strings.Contains(r.Body.String(), "refresh failed") {
+			t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+		}
+	})
+}
+
 func TestLifecycleRefreshesInventoryAfterSuccess(t *testing.T) {
 	inv := &fakeInventory{projects: []core.Project{{
 		ID:          "compose:mtp",

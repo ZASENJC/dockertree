@@ -63,6 +63,12 @@ func TestCLIExecutorUpdateCheckUsesComposeDryRun(t *testing.T) {
 		t.Fatalf("current check = %#v err=%v", check, err)
 	}
 
+	runner.outputs[command] = "DRY-RUN MODE - web Pulled"
+	check, err = (CLIExecutor{Runner: runner}).CheckUpdate(context.Background(), project)
+	if err != nil || check.Status != "current" {
+		t.Fatalf("matching digests should override ambiguous dry-run output: check=%#v err=%v", check, err)
+	}
+
 	runner.outputs[command] = "web Already exists\nworker DRY-RUN MODE - worker Pulled"
 	runner.outputs[digestCommand] = `"sha256:2222222222222222222222222222222222222222222222222222222222222222"`
 	check, err = (CLIExecutor{Runner: runner}).CheckUpdate(context.Background(), project)
