@@ -297,6 +297,63 @@ func TestManagerCanDisableAutomaticRuntimeProvisioning(t *testing.T) {
 	}
 }
 
+func TestStartAndUpdateDoNotProvisionBeforeInstall(t *testing.T) {
+	for _, command := range []string{"start", "update"} {
+		t.Run(command, func(t *testing.T) {
+			h := newMissingLinuxRuntimeHarness(t)
+			result := h.run(t, command)
+			if result.exitCode == 0 || !strings.Contains(result.output, "尚未安装") {
+				t.Fatalf("%s should fail before provisioning: code=%d output=%s", command, result.exitCode, result.output)
+			}
+			if _, err := os.Stat(filepath.Join(h.home, "packages.log")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s invoked the package manager before checking installation: %v", command, err)
+			}
+		})
+	}
+}
+
+func TestStartRejectsUnavailableDockerDaemon(t *testing.T) {
+	h := newHarness(t)
+	if result := h.run(t, "install"); result.exitCode != 0 {
+		t.Fatalf("install failed: %s", result.output)
+	}
+	writeExecutable(t, filepath.Join(h.home, "fake-bin", "open"), "#!/bin/sh\nexit 0\n")
+	h.env = append(h.env, "FAKE_DOCKER_INFO_FAIL=1")
+	result := h.run(t, "start")
+	if result.exitCode == 0 || !strings.Contains(result.output, "无法访问 Docker daemon") {
+		t.Fatalf("start should reject unavailable Docker access: code=%d output=%s", result.exitCode, result.output)
+	}
+	if _, err := os.Stat(filepath.Join(h.stateDir, "dockertree.pid")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed start created a pid file: %v", err)
+	}
+}
+
+func TestPurgeRejectsConfigDirectoryContainingManager(t *testing.T) {
+	h := newHarness(t)
+	if err := os.MkdirAll(h.configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	managerData, err := os.ReadFile(managerPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.manager = filepath.Join(h.configDir, "dockertree.sh")
+	writeExecutable(t, h.manager, string(managerData))
+	marker := filepath.Join(h.configDir, "keep-me")
+	if err := os.WriteFile(marker, []byte("config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := h.run(t, "uninstall", "--purge", "--yes")
+	if result.exitCode == 0 || !strings.Contains(result.output, "管理脚本") {
+		t.Fatalf("purge should reject the manager directory: code=%d output=%s", result.exitCode, result.output)
+	}
+	assertExecutable(t, h.manager)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("rejected purge changed configuration: %v", err)
+	}
+}
+
 func TestManagerUpdateInstallsFromGitHubAndRestartsRunningApp(t *testing.T) {
 	h := newHarness(t)
 	configureFakeGit(t, h)
