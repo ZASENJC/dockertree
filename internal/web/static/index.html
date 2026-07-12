@@ -15,20 +15,92 @@
         </div>
         <div class="auth">
           <button id="themeToggle" class="secondary" type="button" aria-label="切换深色模式" title="切换深色模式">深色</button>
+          <label class="compact-field">自动刷新
+            <select id="autoRefreshInterval" aria-label="自动刷新间隔">
+              <option value="0">关闭</option>
+              <option value="30">30 秒</option>
+              <option value="60">60 秒</option>
+              <option value="300">5 分钟</option>
+            </select>
+          </label>
           <input id="token" type="password" placeholder="Admin token" autocomplete="current-password" />
           <button id="saveToken">保存</button>
           <button id="scan">扫描</button>
         </div>
       </header>
       <nav id="viewTabs" class="view-tabs" aria-label="页面切换">
-        <button class="secondary active" type="button" data-view="containers">容器</button>
+        <button class="secondary active" type="button" data-view="overview">概览</button>
+        <button class="secondary" type="button" data-view="containers">容器</button>
         <button class="secondary" type="button" data-view="projects">项目</button>
         <button class="secondary" type="button" data-view="images">镜像</button>
         <button class="secondary" type="button" data-view="deploy">部署</button>
+        <button class="secondary" type="button" data-view="history">历史</button>
+        <button class="secondary" type="button" data-view="maintenance">维护</button>
       </nav>
+      <section id="filterBar" class="filter-bar" aria-label="搜索和筛选">
+        <input id="globalSearch" type="search" placeholder="搜索项目、容器、标签、镜像或端口" />
+        <select id="statusFilter" aria-label="运行状态">
+          <option value="all">全部状态</option>
+          <option value="running">运行中</option>
+          <option value="stopped">已停止</option>
+        </select>
+        <select id="healthFilter" aria-label="健康状态">
+          <option value="all">全部健康状态</option>
+          <option value="healthy">健康</option>
+          <option value="unhealthy">不健康</option>
+          <option value="none">无健康检查</option>
+        </select>
+        <select id="typeFilter" aria-label="项目类型">
+          <option value="all">全部类型</option>
+          <option value="compose">Compose</option>
+          <option value="standalone">独立容器</option>
+        </select>
+        <select id="tagFilter" aria-label="项目标签">
+          <option value="all">全部标签</option>
+        </select>
+        <label class="check-field"><input id="favoriteOnly" type="checkbox" />仅收藏</label>
+        <select id="sortBy" aria-label="排序方式">
+          <option value="name">按名称</option>
+          <option value="status">按状态</option>
+          <option value="lastScanned">按最近扫描</option>
+        </select>
+        <button id="clearFilters" class="secondary" type="button">清除筛选</button>
+      </section>
       <pre id="operationOutput" class="operation-output">操作结果会显示在这里。</pre>
       <section class="view-shell" aria-label="Docker 管理页面">
-        <section id="containersView" class="panel view-panel active" data-view-panel="containers">
+        <section id="overviewView" class="panel view-panel active" data-view-panel="overview">
+          <div class="panel-title title-actions">
+            <span>概览</span>
+            <button id="refreshStats" class="secondary" type="button">刷新资源</button>
+          </div>
+          <div class="overview-body">
+            <div class="summary-grid" aria-label="Docker 状态汇总">
+              <div class="summary-item"><span>项目</span><strong id="summaryProjects">0</strong></div>
+              <div class="summary-item"><span>容器</span><strong id="summaryContainers">0</strong></div>
+              <div class="summary-item"><span>镜像</span><strong id="summaryImages">0</strong></div>
+              <div class="summary-item"><span>运行中</span><strong id="summaryRunning">0</strong></div>
+              <div class="summary-item"><span>已停止</span><strong id="summaryStopped">0</strong></div>
+              <div class="summary-item attention-summary"><span>不健康</span><strong id="summaryUnhealthy">0</strong></div>
+            </div>
+            <section class="overview-section" aria-labelledby="attentionTitle">
+              <h2 id="attentionTitle">需要关注</h2>
+              <div id="attentionList" class="attention-list"></div>
+            </section>
+            <section class="overview-section" aria-labelledby="statsTitle">
+              <div class="section-heading">
+                <h2 id="statsTitle">资源快照</h2>
+                <span id="statsStatus" class="meta">进入概览后按需读取</span>
+              </div>
+              <div class="table-scroll">
+                <table class="table stats-table">
+                  <thead><tr><th>容器</th><th>CPU</th><th>内存</th><th>网络 IO</th><th>磁盘 IO</th><th>进程</th></tr></thead>
+                  <tbody id="statsBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section id="containersView" class="panel view-panel hidden" data-view-panel="containers">
           <div class="panel-title">容器</div>
           <div id="containers" class="entity-list"></div>
           <div id="containerPagination" class="pagination"></div>
@@ -49,6 +121,13 @@
         <section id="deployView" class="panel view-panel hidden" data-view-panel="deploy">
           <div class="panel-title">部署</div>
           <div class="deploy-body">
+            <div class="template-toolbar">
+              <select id="templateSelect" aria-label="部署模板"><option value="">选择个人模板</option></select>
+              <input id="templateName" type="text" placeholder="模板名称" />
+              <button id="loadTemplate" class="secondary" type="button">载入模板</button>
+              <button id="saveTemplate" class="secondary" type="button">保存模板</button>
+              <button id="deleteTemplate" class="danger" type="button">删除模板</button>
+            </div>
             <div class="segmented" role="tablist" aria-label="部署方式">
               <button id="deployModeImage" class="secondary active" type="button">镜像部署</button>
               <button id="deployModeCompose" class="secondary" type="button">Compose 部署</button>
@@ -58,6 +137,21 @@
               <details id="advancedContainerOptions">
                 <summary>高级选项</summary>
                 <label>自动容器名<input id="containerName" name="containerName" placeholder="自动生成" /></label>
+                <label>端口映射（每行一项）<textarea id="containerPorts" class="compact-textarea" placeholder="8080:80"></textarea></label>
+                <label>环境变量（每行一项）<textarea id="containerEnv" class="compact-textarea" placeholder="KEY=value"></textarea></label>
+                <label>挂载（每行一项）<textarea id="containerVolumes" class="compact-textarea" placeholder="/srv/data:/data:ro"></textarea></label>
+                <div class="field-grid">
+                  <label>网络<input id="containerNetwork" placeholder="proxy" /></label>
+                  <label>重启策略
+                    <select id="containerRestartPolicy">
+                      <option value="">Docker 默认</option>
+                      <option value="no">不重启</option>
+                      <option value="always">始终</option>
+                      <option value="unless-stopped">除非手动停止</option>
+                      <option value="on-failure">失败时</option>
+                    </select>
+                  </label>
+                </div>
               </details>
               <div class="actions inline-actions">
                 <button id="imageSearch" class="secondary" type="button">搜索镜像</button>
@@ -78,7 +172,60 @@
                 <button id="composeDeploy" type="button">写入并部署</button>
               </div>
             </form>
+            <section id="composeDiff" class="compose-diff hidden" aria-label="Compose 差异预览">
+              <div><h2>当前文件</h2><pre id="existingContent">新文件</pre></div>
+              <div><h2>标准化后</h2><pre id="normalizedContent"></pre></div>
+            </section>
             <pre id="deployOutput">选择部署方式后预览命令。</pre>
+          </div>
+        </section>
+        <section id="historyView" class="panel view-panel hidden" data-view-panel="history">
+          <div class="panel-title title-actions">
+            <span>操作历史</span>
+            <button id="refreshHistory" class="secondary" type="button">刷新</button>
+          </div>
+          <div class="history-controls">
+            <select id="historyTarget" aria-label="历史目标"><option value="">全部目标</option></select>
+            <label class="check-field"><input id="historyFailedOnly" type="checkbox" />仅失败</label>
+          </div>
+          <div id="operationHistory" class="history-list"></div>
+        </section>
+        <section id="maintenanceView" class="panel view-panel hidden" data-view-panel="maintenance">
+          <div class="panel-title">维护</div>
+          <div class="maintenance-body">
+            <section class="maintenance-section">
+              <div class="section-heading"><h2>镜像更新检查</h2><button id="checkAllUpdates" class="secondary" type="button">检查全部项目</button></div>
+              <div id="updateCheckResults" class="maintenance-output"></div>
+            </section>
+            <section class="maintenance-section">
+              <h2>自动检查与通知</h2>
+              <div class="settings-grid">
+                <label>检查间隔
+                  <select id="updateCheckInterval">
+                    <option value="0">关闭</option><option value="60">每小时</option><option value="360">每 6 小时</option><option value="1440">每天</option>
+                  </select>
+                </label>
+                <label>Webhook 类型
+                  <select id="webhookType"><option value="generic">通用 JSON</option><option value="ntfy">ntfy</option></select>
+                </label>
+                <label>Webhook URL<input id="webhookURL" type="password" autocomplete="off" /></label>
+                <label class="check-field"><input id="notifyOnUpdates" type="checkbox" />发现更新时通知</label>
+              </div>
+              <div class="actions inline-actions"><button id="saveAutomation" type="button">保存设置</button><button id="testNotification" class="secondary" type="button">发送测试通知</button></div>
+            </section>
+            <section class="maintenance-section">
+              <div class="section-heading"><h2>安全清理</h2><button id="cleanupPreview" class="secondary" type="button">生成清理预览</button></div>
+              <div id="cleanupCandidates" class="cleanup-list"></div>
+              <button id="executeCleanup" class="danger" type="button">执行所选清理</button>
+            </section>
+            <section class="maintenance-section">
+              <h2>配置备份与恢复</h2>
+              <div class="backup-controls">
+                <button id="exportConfig" class="secondary" type="button">导出 YAML 备份</button>
+                <input id="restoreFile" type="file" accept=".yaml,.yml,application/yaml,text/yaml" />
+                <button id="restoreConfig" class="danger" type="button">恢复备份</button>
+              </div>
+            </section>
           </div>
         </section>
       </section>

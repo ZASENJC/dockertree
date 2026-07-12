@@ -74,16 +74,17 @@ func TestCLIExecutorParsesImageSearchAndLocalImages(t *testing.T) {
 
 func TestCLIExecutorLogsUsesComposeOrStandaloneCommand(t *testing.T) {
 	runner := &recordingRunner{outputs: map[string]string{
-		"docker compose -f /srv/app/compose.yml logs --tail 300 web": "compose logs",
-		"docker logs --tail 300 abc123":                              "standalone logs",
+		"docker compose -f /srv/app/compose.yml logs --tail 100 --timestamps web": "compose logs",
+		"docker logs --tail 100 --timestamps abc123":                              "standalone logs",
 	}}
 	exec := CLIExecutor{Runner: runner}
+	options := LogOptions{Tail: 100, Timestamps: true}
 
 	out, err := exec.Logs(context.Background(), core.Project{
 		Type:        core.ProjectTypeCompose,
 		WorkingDir:  "/srv/app",
 		ConfigFiles: []string{"/srv/app/compose.yml"},
-	}, "web")
+	}, "web", options)
 	if err != nil || out != "compose logs" {
 		t.Fatalf("compose logs out=%q err=%v", out, err)
 	}
@@ -91,12 +92,36 @@ func TestCLIExecutorLogsUsesComposeOrStandaloneCommand(t *testing.T) {
 	out, err = exec.Logs(context.Background(), core.Project{
 		Type:     core.ProjectTypeStandalone,
 		Services: []core.Service{{ContainerID: "abc123"}},
-	}, "")
+	}, "", options)
 	if err != nil || out != "standalone logs" {
 		t.Fatalf("standalone logs out=%q err=%v", out, err)
 	}
-	if got := strings.Join(runner.calls, "\n"); !strings.Contains(got, "docker logs --tail 300 abc123") {
+	if got := strings.Join(runner.calls, "\n"); !strings.Contains(got, "docker logs --tail 100 --timestamps abc123") {
 		t.Fatalf("standalone logs did not use docker logs: %s", got)
+	}
+}
+
+func TestCLIExecutorStatsParsesDockerJSONLines(t *testing.T) {
+	runner := &recordingRunner{outputs: map[string]string{
+		"docker stats --no-stream --format {{json .}}": strings.Join([]string{
+			`{"Container":"abc123","Name":"redis","CPUPerc":"1.25%","MemUsage":"42MiB / 1GiB","MemPerc":"4.10%","NetIO":"1.2MB / 300kB","BlockIO":"4kB / 8kB","PIDs":"7"}`,
+			`not-json`,
+			`{"Container":"def456","Name":"web","CPUPerc":"0.00%","MemUsage":"8MiB / 512MiB","MemPerc":"1.56%","NetIO":"0B / 0B","BlockIO":"0B / 0B","PIDs":"3"}`,
+		}, "\n"),
+	}}
+
+	stats, err := (CLIExecutor{Runner: runner}).Stats(context.Background())
+	if err != nil {
+		t.Fatalf("Stats() error = %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("stats = %#v", stats)
+	}
+	if stats[0].ContainerID != "abc123" || stats[0].CPUPercent != 1.25 || stats[0].MemoryPercent != 4.10 || stats[0].PIDs != 7 {
+		t.Fatalf("first stats row = %#v", stats[0])
+	}
+	if stats[1].Name != "web" || stats[1].MemoryUsage != "8MiB / 512MiB" {
+		t.Fatalf("second stats row = %#v", stats[1])
 	}
 }
 
@@ -123,8 +148,8 @@ func TestContainerLifecycleAndLogsCommands(t *testing.T) {
 		t.Fatalf("container lifecycle cmd = %#v, want %#v", lifecycleCmd, wantLifecycle)
 	}
 
-	logsCmd := ContainerLogsCommand(" abc123 ")
-	wantLogs := Command{Name: "docker", Args: []string{"logs", "--tail", "300", "abc123"}}
+	logsCmd := ContainerLogsCommand(" abc123 ", LogOptions{Tail: 1000, Timestamps: true})
+	wantLogs := Command{Name: "docker", Args: []string{"logs", "--tail", "1000", "--timestamps", "abc123"}}
 	if !reflect.DeepEqual(logsCmd, wantLogs) {
 		t.Fatalf("container logs cmd = %#v, want %#v", logsCmd, wantLogs)
 	}
@@ -206,10 +231,45 @@ func TestComposeConfigRequiresBuildUsesBuildField(t *testing.T) {
 }
 
 func TestContainerDeployCommands(t *testing.T) {
-	cmd := ContainerDeployCommand(ContainerDeployRequest{Name: "redis-local", Image: "redis:7"})
-	want := Command{Name: "docker", Args: []string{"run", "-d", "--name", "redis-local", "redis:7"}}
+	req := ContainerDeployRequest{
+		Name: "redis-local", Image: "redis:7", Ports: []string{"6379:6379"},
+		Env: []string{"REDIS_PASSWORD=secret"}, Volumes: []string{"redis-data:/data"},
+		Network: "proxy", RestartPolicy: "unless-stopped",
+	}
+	cmd, err := ValidatedContainerDeployCommand(req)
+	if err != nil {
+		t.Fatalf("ValidatedContainerDeployCommand() error = %v", err)
+	}
+	want := Command{Name: "docker", Args: []string{"run", "-d", "--name", "redis-local", "--restart", "unless-stopped", "-p", "6379:6379", "-e", "REDIS_PASSWORD=secret", "-v", "redis-data:/data", "--network", "proxy", "redis:7"}}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("cmd = %#v, want %#v", cmd, want)
+	}
+	if redacted := cmd.RedactedString(); strings.Contains(redacted, "secret") || !strings.Contains(redacted, "REDIS_PASSWORD=***") {
+		t.Fatalf("redacted command = %q", redacted)
+	}
+}
+
+func TestContainerDeployPlanRedactsEnvironmentValues(t *testing.T) {
+	plan, err := ContainerDeployPlan(ContainerDeployRequest{Image: "redis:7", Env: []string{"PASSWORD=top-secret"}})
+	if err != nil {
+		t.Fatalf("ContainerDeployPlan() error = %v", err)
+	}
+	if len(plan.Commands) != 1 || strings.Contains(plan.Commands[0], "top-secret") || !strings.Contains(plan.Commands[0], "PASSWORD=***") {
+		t.Fatalf("plan commands = %#v", plan.Commands)
+	}
+}
+
+func TestContainerDeployValidationRejectsUnsafeOptions(t *testing.T) {
+	for _, req := range []ContainerDeployRequest{
+		{Image: "redis:7", Ports: []string{"bad-port"}},
+		{Image: "redis:7", Env: []string{"NOT AN ENV"}},
+		{Image: "redis:7", Volumes: []string{"missing-target"}},
+		{Image: "redis:7", Network: "bad network"},
+		{Image: "redis:7", RestartPolicy: "sometimes"},
+	} {
+		if _, err := ValidatedContainerDeployCommand(req); err == nil {
+			t.Fatalf("expected validation error for %#v", req)
+		}
 	}
 }
 
@@ -279,5 +339,18 @@ func TestComposeDeployPlanRequiresPathAndContent(t *testing.T) {
 	}
 	if _, err := ComposeDeployPlan(ComposeDeployRequest{ComposeContent: "services: {}"}); err == nil {
 		t.Fatal("expected missing path error")
+	}
+}
+
+func TestComposeContentValidationAndHash(t *testing.T) {
+	normalized, err := NormalizeComposeContent("services:\n  web:\n    image: nginx:latest\n")
+	if err != nil || !strings.Contains(normalized, "services:") || !strings.Contains(normalized, "nginx:latest") {
+		t.Fatalf("normalized=%q err=%v", normalized, err)
+	}
+	if _, err := NormalizeComposeContent("name: missing-services\n"); err == nil {
+		t.Fatal("compose content without services should fail")
+	}
+	if ComposeContentHash(normalized) == "" || ComposeContentHash(normalized) != ComposeContentHash(normalized) {
+		t.Fatal("compose hash should be stable")
 	}
 }

@@ -24,8 +24,23 @@ func TestLoadCreatesMigratableDefaults(t *testing.T) {
 	if cfg.Update.RemoveOrphans {
 		t.Fatal("RemoveOrphans should default to false")
 	}
+	if cfg.Automation.UpdateCheckIntervalMinutes != 0 || cfg.Automation.WebhookType != "generic" || !cfg.Automation.NotifyOnUpdates {
+		t.Fatalf("unexpected automation defaults: %#v", cfg.Automation)
+	}
 	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); err != nil {
 		t.Fatalf("config.yaml was not created: %v", err)
+	}
+}
+
+func TestValidateAutomationRejectsUnsafeSettings(t *testing.T) {
+	for _, automation := range []AutomationConfig{
+		{UpdateCheckIntervalMinutes: 5, WebhookType: "generic"},
+		{UpdateCheckIntervalMinutes: 60, WebhookType: "unknown"},
+		{UpdateCheckIntervalMinutes: 60, WebhookType: "generic", WebhookURL: "file:///tmp/hook"},
+	} {
+		if err := ValidateAutomation(automation); err == nil {
+			t.Fatalf("expected validation error for %#v", automation)
+		}
 	}
 }
 

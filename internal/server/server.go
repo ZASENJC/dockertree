@@ -6,9 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
 
 	"dockertree/internal/config"
 	"dockertree/internal/core"
@@ -25,15 +30,65 @@ type Scanner interface {
 	Scan(context.Context) ([]core.Project, error)
 }
 
+type OperationLog interface {
+	Append(core.OperationRecord) error
+	List(limit int, targetID string, failedOnly bool) ([]core.OperationRecord, error)
+}
+
+type TemplateStore interface {
+	LoadTemplates() ([]core.DeployTemplate, error)
+	SaveTemplates([]core.DeployTemplate) error
+}
+
+const defaultUpdateCheckTimeout = 2 * time.Minute
+
 type Server struct {
-	cfg     config.Config
-	store   Inventory
-	scanner Scanner
-	exec    docker.Executor
+	cfgMu               sync.RWMutex
+	cfg                 config.Config
+	store               Inventory
+	scanner             Scanner
+	exec                docker.Executor
+	operations          OperationLog
+	templates           TemplateStore
+	templateMu          sync.Mutex
+	notifier            Notifier
+	automationMu        sync.Mutex
+	lastAutomationCheck time.Time
+	updateCheckTimeout  time.Duration
 }
 
 func New(cfg config.Config, store Inventory, scanner Scanner, exec docker.Executor) *Server {
-	return &Server{cfg: cfg, store: store, scanner: scanner, exec: exec}
+	return &Server{
+		cfg: cfg, store: store, scanner: scanner, exec: exec, notifier: HTTPNotifier{},
+		updateCheckTimeout: defaultUpdateCheckTimeout,
+	}
+}
+
+func (s *Server) WithOperationLog(log OperationLog) *Server {
+	s.operations = log
+	return s
+}
+
+func (s *Server) WithTemplateStore(templates TemplateStore) *Server {
+	s.templates = templates
+	return s
+}
+
+func (s *Server) WithNotifier(notifier Notifier) *Server {
+	s.notifier = notifier
+	return s
+}
+
+func (s *Server) currentConfig() config.Config {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg
+}
+
+func (s *Server) setConfig(cfg config.Config) {
+	s.cfgMu.Lock()
+	s.cfg = cfg
+	s.cfgMu.Unlock()
 }
 
 func (s *Server) Handler() http.Handler {
@@ -46,7 +101,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /styles.css", s.asset)
 	mux.HandleFunc("GET /api/projects", s.auth(s.projects))
 	mux.HandleFunc("GET /api/projects/{id}", s.auth(s.project))
+	mux.HandleFunc("PATCH /api/projects/{id}/metadata", s.auth(s.updateProjectMetadata))
 	mux.HandleFunc("DELETE /api/projects/{id}", s.auth(s.deleteProject))
+	mux.HandleFunc("GET /api/containers/stats", s.auth(s.containerStats))
+	mux.HandleFunc("GET /api/containers/{id}/inspect", s.auth(s.containerInspect))
 	mux.HandleFunc("DELETE /api/containers/{id}", s.auth(s.deleteContainer))
 	mux.HandleFunc("POST /api/containers/{id}/actions/start", s.auth(s.containerLifecycle("start")))
 	mux.HandleFunc("POST /api/containers/{id}/actions/stop", s.auth(s.containerLifecycle("stop")))
@@ -55,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/images", s.auth(s.deleteImage))
 	mux.HandleFunc("POST /api/scan", s.auth(s.scan))
 	mux.HandleFunc("POST /api/projects/{id}/actions/preview-update", s.auth(s.previewUpdate))
+	mux.HandleFunc("POST /api/projects/{id}/actions/check-update", s.auth(s.checkProjectUpdate))
 	mux.HandleFunc("POST /api/projects/{id}/actions/deploy", s.auth(s.deploy))
 	mux.HandleFunc("POST /api/projects/{id}/actions/start", s.auth(s.lifecycle("start")))
 	mux.HandleFunc("POST /api/projects/{id}/actions/stop", s.auth(s.lifecycle("stop")))
@@ -66,12 +125,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/deploy/container", s.auth(s.deployContainer))
 	mux.HandleFunc("POST /api/deploy/compose/preview", s.auth(s.previewComposeDeploy))
 	mux.HandleFunc("POST /api/deploy/compose", s.auth(s.deployCompose))
+	mux.HandleFunc("GET /api/operations", s.auth(s.operationHistory))
+	mux.HandleFunc("POST /api/updates/check", s.auth(s.checkAllUpdates))
+	mux.HandleFunc("GET /api/settings/automation", s.auth(s.automationSettings))
+	mux.HandleFunc("PATCH /api/settings/automation", s.auth(s.updateAutomationSettings))
+	mux.HandleFunc("POST /api/notifications/test", s.auth(s.testNotification))
+	mux.HandleFunc("GET /api/cleanup/preview", s.auth(s.cleanupPreview))
+	mux.HandleFunc("POST /api/cleanup", s.auth(s.cleanup))
+	mux.HandleFunc("GET /api/config/export", s.auth(s.exportConfig))
+	mux.HandleFunc("POST /api/config/restore", s.auth(s.restoreConfig))
+	mux.HandleFunc("GET /api/templates", s.auth(s.listTemplates))
+	mux.HandleFunc("POST /api/templates", s.auth(s.saveTemplate))
+	mux.HandleFunc("DELETE /api/templates/{id}", s.auth(s.deleteTemplate))
 	return mux
 }
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	data, _ := web.Assets.ReadFile("static/index.html")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
 }
 
@@ -87,12 +159,14 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.AdminToken != "" && r.Header.Get("Authorization") != "Bearer "+s.cfg.AdminToken {
+		cfg := s.currentConfig()
+		if cfg.AdminToken != "" && r.Header.Get("Authorization") != "Bearer "+cfg.AdminToken {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -121,6 +195,120 @@ func (s *Server) project(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+func (s *Server) updateProjectMetadata(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Favorite *bool               `json:"favorite"`
+		Tags     *[]string           `json:"tags"`
+		Aliases  *[]string           `json:"aliases"`
+		Links    *[]core.ServiceLink `json:"links"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	var tags []string
+	var aliases []string
+	var links []core.ServiceLink
+	var err error
+	if req.Tags != nil {
+		tags, err = normalizeMetadataList(*req.Tags)
+		if err != nil {
+			badRequest(w, err)
+			return
+		}
+	}
+	if req.Aliases != nil {
+		aliases, err = normalizeMetadataList(*req.Aliases)
+		if err != nil {
+			badRequest(w, err)
+			return
+		}
+	}
+	if req.Links != nil {
+		links, err = normalizeServiceLinks(*req.Links)
+		if err != nil {
+			badRequest(w, err)
+			return
+		}
+	}
+	projects, err := s.store.LoadInventory()
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	for i := range projects {
+		if projects[i].ID != r.PathValue("id") {
+			continue
+		}
+		if req.Favorite != nil {
+			projects[i].Favorite = *req.Favorite
+		}
+		if req.Tags != nil {
+			projects[i].Tags = tags
+		}
+		if req.Aliases != nil {
+			projects[i].Aliases = aliases
+		}
+		if req.Links != nil {
+			projects[i].Links = links
+		}
+		if err := s.store.SaveInventory(projects); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		respond(w, projects[i], nil)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func normalizeServiceLinks(values []core.ServiceLink) ([]core.ServiceLink, error) {
+	seen := make(map[string]struct{}, len(values))
+	links := make([]core.ServiceLink, 0, len(values))
+	for _, link := range values {
+		link.Name = strings.TrimSpace(link.Name)
+		link.URL = strings.TrimSpace(link.URL)
+		if link.Name == "" || link.URL == "" {
+			continue
+		}
+		if utf8.RuneCountInString(link.Name) > 64 || len(link.URL) > 2048 {
+			return nil, errors.New("service link name or URL is too long")
+		}
+		parsed, err := url.ParseRequestURI(link.URL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return nil, errors.New("service links must use http or https URLs")
+		}
+		key := strings.ToLower(link.Name) + "\x00" + link.URL
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		links = append(links, link)
+	}
+	return links, nil
+}
+
+func normalizeMetadataList(values []string) ([]string, error) {
+	const maxMetadataItemLength = 64
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if utf8.RuneCountInString(value) > maxMetadataItemLength {
+			return nil, fmt.Errorf("metadata items must not exceed %d characters", maxMetadataItemLength)
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized, nil
+}
+
 func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	projects, err := s.scanInventory(r.Context())
 	respond(w, projects, err)
@@ -141,7 +329,8 @@ func (s *Server) previewUpdate(w http.ResponseWriter, r *http.Request) {
 		respond(w, inspection, err)
 		return
 	}
-	respond(w, docker.PreviewUpdate(project, requiresBuild, s.cfg.Update.RemoveOrphans), nil)
+	cfg := s.currentConfig()
+	respond(w, docker.PreviewUpdate(project, requiresBuild, cfg.Update.RemoveOrphans), nil)
 }
 
 func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {
@@ -159,15 +348,16 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {
 		respond(w, inspection, err)
 		return
 	}
-	plan := docker.PreviewUpdate(project, requiresBuild, s.cfg.Update.RemoveOrphans)
+	cfg := s.currentConfig()
+	plan := docker.PreviewUpdate(project, requiresBuild, cfg.Update.RemoveOrphans)
 	if !plan.CanDeploy {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(plan)
 		return
 	}
 	results := []docker.Result{}
-	for _, cmd := range docker.UpdateCommands(project, requiresBuild, s.cfg.Update.RemoveOrphans) {
-		result, err := s.exec.Execute(r.Context(), cmd)
+	for _, cmd := range docker.UpdateCommands(project, requiresBuild, cfg.Update.RemoveOrphans) {
+		result, err := s.executeRecorded(r.Context(), cmd, "project", project.ID, project.Name, "deploy")
 		results = append(results, result)
 		if err != nil {
 			respond(w, results, err)
@@ -192,7 +382,7 @@ func (s *Server) lifecycle(action string) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		result, err := s.exec.Execute(r.Context(), docker.LifecycleCommand(project, action))
+		result, err := s.executeRecorded(r.Context(), docker.LifecycleCommand(project, action), "project", project.ID, project.Name, action)
 		if err == nil {
 			err = s.refreshInventory(r.Context())
 		}
@@ -210,7 +400,12 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	logs, err := s.exec.Logs(r.Context(), project, r.URL.Query().Get("service"))
+	options, err := logOptionsFromRequest(r)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	logs, err := s.exec.Logs(r.Context(), project, r.URL.Query().Get("service"), options)
 	if err != nil {
 		respond(w, nil, err)
 		return
@@ -225,7 +420,7 @@ func (s *Server) deleteContainer(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, errText("container id is required"))
 		return
 	}
-	result, err := s.exec.Execute(r.Context(), docker.DeleteContainerCommand(id))
+	result, err := s.executeRecorded(r.Context(), docker.DeleteContainerCommand(id), "container", id, id, "delete")
 	if err == nil {
 		err = s.refreshInventory(r.Context())
 	}
@@ -239,7 +434,7 @@ func (s *Server) containerLifecycle(action string) http.HandlerFunc {
 			badRequest(w, errText("container id is required"))
 			return
 		}
-		result, err := s.exec.Execute(r.Context(), docker.ContainerLifecycleCommand(id, action))
+		result, err := s.executeRecorded(r.Context(), docker.ContainerLifecycleCommand(id, action), "container", id, id, action)
 		if err == nil {
 			err = s.refreshInventory(r.Context())
 		}
@@ -253,13 +448,42 @@ func (s *Server) containerLogs(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, errText("container id is required"))
 		return
 	}
-	result, err := s.exec.Execute(r.Context(), docker.ContainerLogsCommand(id))
+	options, err := logOptionsFromRequest(r)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	result, err := s.exec.Execute(r.Context(), docker.ContainerLogsCommand(id, options))
 	if err != nil {
 		respond(w, result, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(result.Output))
+}
+
+func logOptionsFromRequest(r *http.Request) (docker.LogOptions, error) {
+	options := docker.LogOptions{Tail: 300}
+	if value := strings.TrimSpace(r.URL.Query().Get("tail")); value != "" {
+		tail, err := strconv.Atoi(value)
+		if err != nil || tail < 1 || tail > 5000 {
+			return docker.LogOptions{}, errors.New("tail must be between 1 and 5000")
+		}
+		options.Tail = tail
+	}
+	if value := strings.TrimSpace(r.URL.Query().Get("timestamps")); value != "" {
+		timestamps, err := strconv.ParseBool(value)
+		if err != nil {
+			return docker.LogOptions{}, errors.New("timestamps must be true or false")
+		}
+		options.Timestamps = timestamps
+	}
+	return options, nil
+}
+
+func (s *Server) containerStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.exec.Stats(r.Context())
+	respond(w, stats, err)
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +500,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, errText("project has no compose file for docker compose down"))
 		return
 	}
-	result, err := s.exec.Execute(r.Context(), docker.DeleteProjectCommand(project))
+	result, err := s.executeRecorded(r.Context(), docker.DeleteProjectCommand(project), "project", project.ID, project.Name, "delete")
 	if err == nil {
 		err = s.refreshInventory(r.Context())
 	}
@@ -295,7 +519,7 @@ func (s *Server) deleteImage(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, errText("image ref is required"))
 		return
 	}
-	result, err := s.exec.Execute(r.Context(), docker.DeleteImageCommand(req.Ref, req.Force))
+	result, err := s.executeRecorded(r.Context(), docker.DeleteImageCommand(req.Ref, req.Force), "image", req.Ref, req.Ref, "delete")
 	respond(w, result, err)
 }
 
@@ -328,6 +552,7 @@ func preserveProjectMetadata(existing, scanned []core.Project) []core.Project {
 			}
 			scanned[i].Aliases = append([]string(nil), previous.Aliases...)
 			scanned[i].Tags = append([]string(nil), previous.Tags...)
+			scanned[i].Links = append([]core.ServiceLink(nil), previous.Links...)
 			scanned[i].Favorite = previous.Favorite
 			scanned[i].LastAction = previous.LastAction
 			scanned[i].LastExitCode = previous.LastExitCode
@@ -403,7 +628,11 @@ func (s *Server) deployContainer(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	result, err := s.exec.Execute(r.Context(), cmd)
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = docker.DeriveContainerName(req.Image)
+	}
+	result, err := s.executeRecorded(r.Context(), cmd, "container", "container:"+name, name, "deploy")
 	if err != nil {
 		result = explainContainerDeployFailure(result, req.Image)
 	}
@@ -423,7 +652,29 @@ func (s *Server) previewComposeDeploy(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	respond(w, plan, nil)
+	normalized, err := docker.NormalizeComposeContent(req.ComposeContent)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	existing := ""
+	existingFound := false
+	if data, readErr := os.ReadFile(strings.TrimSpace(req.ComposePath)); readErr == nil {
+		existing = string(data)
+		existingFound = true
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		respond(w, nil, readErr)
+		return
+	}
+	preview := core.ComposeDeployPreview{
+		Plan: plan, NormalizedContent: normalized, ExistingContent: existing,
+		Overwrites: existingFound && existing != normalized,
+	}
+	preview.ExistingHash = "absent"
+	if existingFound {
+		preview.ExistingHash = docker.ComposeContentHash(existing)
+	}
+	respond(w, preview, nil)
 }
 
 func (s *Server) deployCompose(w http.ResponseWriter, r *http.Request) {
@@ -437,12 +688,28 @@ func (s *Server) deployCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	composePath := strings.TrimSpace(req.ComposePath)
+	normalized, err := docker.NormalizeComposeContent(req.ComposeContent)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	if req.ExpectedExistingHash != "" {
+		actualHash, hashErr := composeFileHash(composePath)
+		if hashErr != nil {
+			respond(w, nil, hashErr)
+			return
+		}
+		if actualHash != req.ExpectedExistingHash {
+			conflict(w, errComposeFileChanged)
+			return
+		}
+	}
 	composeDir := filepath.Dir(composePath)
 	if err := os.MkdirAll(composeDir, 0o755); err != nil {
 		respond(w, nil, err)
 		return
 	}
-	stagedPath, err := stageComposeFile(composeDir, req.ComposeContent)
+	stagedPath, err := stageComposeFile(composeDir, normalized)
 	if err != nil {
 		respond(w, nil, err)
 		return
@@ -457,12 +724,20 @@ func (s *Server) deployCompose(w http.ResponseWriter, r *http.Request) {
 		respond(w, validationResult, err)
 		return
 	}
-	restore, discardBackup, err := replaceComposeFile(composePath, stagedPath)
+	restore, discardBackup, err := replaceComposeFile(composePath, stagedPath, req.ExpectedExistingHash)
 	if err != nil {
+		if errors.Is(err, errComposeFileChanged) {
+			conflict(w, err)
+			return
+		}
 		respond(w, nil, err)
 		return
 	}
-	result, err := s.exec.Execute(r.Context(), cmd)
+	projectName := strings.TrimSpace(req.Name)
+	if projectName == "" {
+		projectName = filepath.Base(composeDir)
+	}
+	result, err := s.executeRecorded(r.Context(), cmd, "project", "compose:"+projectName, projectName, "deploy")
 	if err != nil {
 		if restoreErr := restore(); restoreErr != nil {
 			err = errors.Join(err, fmt.Errorf("restore original compose file: %w", restoreErr))
@@ -498,7 +773,29 @@ func stageComposeFile(dir, content string) (string, error) {
 	return path, nil
 }
 
-func replaceComposeFile(target, staged string) (restore func() error, discardBackup func() error, err error) {
+var errComposeFileChanged = errText("compose file changed after preview; preview again before deploying")
+
+func composeFileHash(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "absent", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return docker.ComposeContentHash(string(data)), nil
+}
+
+func replaceComposeFile(target, staged, expectedExistingHash string) (restore func() error, discardBackup func() error, err error) {
+	if expectedExistingHash != "" {
+		actualHash, hashErr := composeFileHash(target)
+		if hashErr != nil {
+			return nil, nil, hashErr
+		}
+		if actualHash != expectedExistingHash {
+			return nil, nil, errComposeFileChanged
+		}
+	}
 	backup := ""
 	if _, statErr := os.Stat(target); statErr == nil {
 		placeholder, createErr := os.CreateTemp(filepath.Dir(target), ".dockertree-compose-backup-*")
@@ -657,6 +954,12 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {
 func badRequest(w http.ResponseWriter, err error) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+}
+
+func conflict(w http.ResponseWriter, err error) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusConflict)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
 

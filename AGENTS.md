@@ -83,7 +83,7 @@ Docker actions can mutate the user's machine. Be conservative.
 
 ## Current UX Contracts
 
-- `容器` page lists containers/services. Clicking a container switches to its project on the `项目` page.
+- `容器` page lists containers/services. Clicking a container expands its own detail; switching to the related project is an explicit action inside that detail.
 - `项目` page lists Compose/standalone projects and shows project actions/details.
 - `镜像` page lists local images and contains image/Compose deploy flows.
 - Image deploy uses one primary image search/name input and derives the container name automatically; advanced options can override the name.

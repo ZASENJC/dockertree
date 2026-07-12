@@ -26,6 +26,31 @@ func (c Command) String() string {
 	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
+func (c Command) RedactedString() string {
+	redacted := Command{Name: c.Name, Dir: c.Dir, Args: append([]string(nil), c.Args...)}
+	for i := 0; i < len(redacted.Args); i++ {
+		if redacted.Args[i] == "-e" || redacted.Args[i] == "--env" {
+			if i+1 < len(redacted.Args) {
+				redacted.Args[i+1] = redactEnv(redacted.Args[i+1])
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(redacted.Args[i], "--env=") {
+			redacted.Args[i] = "--env=" + redactEnv(strings.TrimPrefix(redacted.Args[i], "--env="))
+		}
+	}
+	return redacted.String()
+}
+
+func redactEnv(value string) string {
+	key, _, ok := strings.Cut(value, "=")
+	if !ok {
+		return value
+	}
+	return key + "=***"
+}
+
 type Result struct {
 	Command  string `json:"command"`
 	Output   string `json:"output"`
@@ -35,9 +60,18 @@ type Result struct {
 
 type Executor interface {
 	Execute(ctx context.Context, cmd Command) (Result, error)
-	Logs(ctx context.Context, project core.Project, service string) (string, error)
+	Logs(ctx context.Context, project core.Project, service string, options LogOptions) (string, error)
 	SearchImages(ctx context.Context, term string) ([]SearchResult, error)
 	LocalImages(ctx context.Context) ([]LocalImage, error)
+	Stats(ctx context.Context) ([]core.ContainerStats, error)
+	Inspect(ctx context.Context, containerID string) (core.ContainerInspect, error)
+	CheckUpdate(ctx context.Context, project core.Project) (core.UpdateCheck, error)
+	CleanupPreview(ctx context.Context) (core.CleanupPreview, error)
+}
+
+type LogOptions struct {
+	Tail       int
+	Timestamps bool
 }
 
 type CLIExecutor struct {
@@ -68,7 +102,8 @@ func (e CLIExecutor) Execute(ctx context.Context, cmd Command) (Result, error) {
 	return result, nil
 }
 
-func (e CLIExecutor) Logs(ctx context.Context, project core.Project, service string) (string, error) {
+func (e CLIExecutor) Logs(ctx context.Context, project core.Project, service string, options LogOptions) (string, error) {
+	logArgs := logOptionArgs(options)
 	if project.Type == core.ProjectTypeStandalone {
 		containerID := ""
 		if service != "" {
@@ -85,16 +120,61 @@ func (e CLIExecutor) Logs(ctx context.Context, project core.Project, service str
 		if containerID == "" {
 			return "", errors.New("standalone project has no container for logs")
 		}
-		result, err := e.Execute(ctx, Command{Name: "docker", Args: []string{"logs", "--tail", "300", containerID}})
+		result, err := e.Execute(ctx, Command{Name: "docker", Args: append(append([]string{"logs"}, logArgs...), containerID)})
 		return result.Output, err
 	}
 	args := composeArgs(project.ConfigFiles)
-	args = append(args, "logs", "--tail", "300")
+	args = append(args, "logs")
+	args = append(args, logArgs...)
 	if service != "" {
 		args = append(args, service)
 	}
 	result, err := e.Execute(ctx, Command{Name: "docker", Args: args, Dir: project.WorkingDir})
 	return result.Output, err
+}
+
+func (e CLIExecutor) Stats(ctx context.Context) ([]core.ContainerStats, error) {
+	result, err := e.Execute(ctx, Command{Name: "docker", Args: []string{"stats", "--no-stream", "--format", "{{json .}}"}})
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]core.ContainerStats, 0)
+	for _, line := range strings.Split(result.Output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row struct {
+			Container string `json:"Container"`
+			Name      string `json:"Name"`
+			CPUPerc   string `json:"CPUPerc"`
+			MemUsage  string `json:"MemUsage"`
+			MemPerc   string `json:"MemPerc"`
+			NetIO     string `json:"NetIO"`
+			BlockIO   string `json:"BlockIO"`
+			PIDs      string `json:"PIDs"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			continue
+		}
+		pids, _ := strconv.Atoi(strings.TrimSpace(row.PIDs))
+		rows = append(rows, core.ContainerStats{
+			ContainerID:   row.Container,
+			Name:          row.Name,
+			CPUPercent:    parsePercent(row.CPUPerc),
+			MemoryUsage:   row.MemUsage,
+			MemoryPercent: parsePercent(row.MemPerc),
+			NetworkIO:     row.NetIO,
+			BlockIO:       row.BlockIO,
+			PIDs:          pids,
+		})
+	}
+	return rows, nil
+}
+
+func parsePercent(value string) float64 {
+	parsed, _ := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(value, "%")), 64)
+	return parsed
 }
 
 func (e CLIExecutor) SearchImages(ctx context.Context, term string) ([]SearchResult, error) {
@@ -222,8 +302,22 @@ func ContainerLifecycleCommand(containerID string, action string) Command {
 	return Command{Name: "docker", Args: []string{action, strings.TrimSpace(containerID)}}
 }
 
-func ContainerLogsCommand(containerID string) Command {
-	return Command{Name: "docker", Args: []string{"logs", "--tail", "300", strings.TrimSpace(containerID)}}
+func ContainerLogsCommand(containerID string, options LogOptions) Command {
+	args := append([]string{"logs"}, logOptionArgs(options)...)
+	args = append(args, strings.TrimSpace(containerID))
+	return Command{Name: "docker", Args: args}
+}
+
+func logOptionArgs(options LogOptions) []string {
+	tail := options.Tail
+	if tail <= 0 {
+		tail = 300
+	}
+	args := []string{"--tail", strconv.Itoa(tail)}
+	if options.Timestamps {
+		args = append(args, "--timestamps")
+	}
+	return args
 }
 
 func DeleteContainerCommand(containerID string) Command {

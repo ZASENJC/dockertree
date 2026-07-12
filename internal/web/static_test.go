@@ -186,7 +186,7 @@ func TestContainerDetailExpandsInsideSelectedContainerRow(t *testing.T) {
 	}
 }
 
-func TestContainerRowOpensProjectAndDetailsUseSeparateButton(t *testing.T) {
+func TestContainerRowTogglesItsOwnDetail(t *testing.T) {
 	appData, err := Assets.ReadFile("static/app.js")
 	if err != nil {
 		t.Fatal(err)
@@ -198,13 +198,15 @@ func TestContainerRowOpensProjectAndDetailsUseSeparateButton(t *testing.T) {
 		t.Fatal("could not find renderContainers section")
 	}
 	renderContainers := js[start:end]
-	for _, want := range []string{"data-details", "openContainerProject(item)", "event.stopPropagation()", "toggleContainer(item)"} {
+	for _, want := range []string{"btn.addEventListener('click', () => toggleContainer(item));", "event.preventDefault();", "toggleContainer(item);"} {
 		if !strings.Contains(renderContainers, want) {
-			t.Fatalf("container navigation/detail behavior missing %q", want)
+			t.Fatalf("container row should toggle its own detail; missing %q", want)
 		}
 	}
-	if strings.Contains(renderContainers, "btn.addEventListener('click', () => {\n      toggleContainer(item);") {
-		t.Fatal("container row click still expands details instead of opening the project")
+	for _, forbidden := range []string{"data-details", "openContainerProject(item)"} {
+		if strings.Contains(renderContainers, forbidden) {
+			t.Fatalf("container row should not navigate to the project or need a separate detail button; found %q", forbidden)
+		}
 	}
 }
 
@@ -477,6 +479,168 @@ func TestImageDeleteOffersForceRetryOnDockerConflict(t *testing.T) {
 	for _, want := range []string{"requiresForceImageDelete", "force: true", "强制删除镜像", "deleteImage(ref, true)"} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("image delete should offer force retry on Docker conflict; missing %q", want)
+		}
+	}
+}
+
+func TestOperationsDashboardAssets(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(indexData) + string(appData)
+	for _, want := range []string{
+		`data-view="overview"`, "overviewView", "概览", "需要关注", "资源快照",
+		"summaryProjects", "summaryContainers", "summaryImages", "summaryRunning", "summaryStopped", "summaryUnhealthy",
+		"/api/containers/stats", "renderOverview", "loadStats",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("operations dashboard missing %q", want)
+		}
+	}
+}
+
+func TestSearchFilterAndMetadataAssets(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(indexData) + string(appData)
+	for _, want := range []string{
+		"globalSearch", "statusFilter", "healthFilter", "typeFilter", "tagFilter", "favoriteOnly", "sortBy",
+		"filteredProjects", "filteredContainers", "project.favorite", "project.tags", "project.aliases",
+		"saveProjectMetadata", "/api/projects/${encodeURIComponent(project.id)}/metadata", "method: 'PATCH'",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("search/filter/metadata UI missing %q", want)
+		}
+	}
+}
+
+func TestEnhancedLogsAndAutoRefreshAssets(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(indexData) + string(appData)
+	for _, want := range []string{
+		"logTail", "logTimestamps", "logKeyword", "logService", "refreshLogs", "filterLogText",
+		"dockertree.autoRefreshInterval", "autoRefreshInterval", "syncAutoRefresh", "document.hidden", "visibilitychange",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("enhanced logs/auto refresh UI missing %q", want)
+		}
+	}
+}
+
+func TestHistoryAndSafeInspectAssets(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(indexData) + string(appData)
+	for _, want := range []string{
+		`data-view="history"`, "historyView", "操作历史", "historyFailedOnly", "historyTarget", "/api/operations",
+		"containerInspect", "/api/containers/${encodeURIComponent(id)}/inspect", "restartPolicy", "inspectMounts",
+		"projectLinks", "addServiceLink", "collectServiceLinks",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("history/inspect UI missing %q", want)
+		}
+	}
+}
+
+func TestMaintenanceAutomationAssets(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(indexData) + string(appData)
+	for _, want := range []string{
+		`data-view="maintenance"`, "maintenanceView", "维护", "checkAllUpdates", "/api/updates/check",
+		"updateCheckInterval", "webhookURL", "webhookType", "/api/settings/automation", "/api/notifications/test",
+		"cleanupPreview", "/api/cleanup/preview", "executeCleanup", "确认执行所选清理",
+		"exportConfig", "/api/config/export", "restoreConfig", "/api/config/restore",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("maintenance UI missing %q", want)
+		}
+	}
+}
+
+func TestAdvancedDeployComposeDiffAndTemplateAssets(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(indexData) + string(appData)
+	for _, want := range []string{
+		"containerPorts", "containerEnv", "containerVolumes", "containerNetwork", "containerRestartPolicy",
+		"templateSelect", "saveTemplate", "deleteTemplate", "/api/templates",
+		"composeDiff", "existingContent", "normalizedContent", "existingHash", "expectedExistingHash",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("advanced deploy UI missing %q", want)
+		}
+	}
+}
+
+func TestMobileDeployLayoutConstrainsGridContent(t *testing.T) {
+	cssData, err := Assets.ReadFile("static/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(cssData)
+	for _, want := range []string{
+		".deploy-body {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);",
+		".deploy-body > * {\n  min-width: 0;",
+		".compose-diff > * {\n  min-width: 0;",
+		".compose-diff {\n    grid-template-columns: minmax(0, 1fr);",
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("deploy layout must prevent long preview content from widening the page; missing %q", want)
+		}
+	}
+}
+
+func TestMobileImageLayoutConstrainsLongImageNames(t *testing.T) {
+	cssData, err := Assets.ReadFile("static/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(cssData)
+	for _, want := range []string{
+		".image-list {\n  display: grid;\n  grid-template-columns: minmax(0, 1fr);",
+		".field-grid,\n  .search-result,\n  .image-row {\n    grid-template-columns: minmax(0, 1fr);",
+		".search-result > *,\n.image-row > * {\n  min-width: 0;",
+		".search-result strong,\n.image-row strong {\n  overflow-wrap: anywhere;",
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("image layout must allow long image names to shrink on mobile; missing %q", want)
 		}
 	}
 }

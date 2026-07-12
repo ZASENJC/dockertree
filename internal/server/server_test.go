@@ -50,8 +50,13 @@ func (f fakeScanner) Scan(context.Context) ([]core.Project, error) {
 type fakeExecutor struct {
 	commands []string
 	logs     string
+	logCalls []docker.LogOptions
 	search   []docker.SearchResult
 	images   []docker.LocalImage
+	stats    []core.ContainerStats
+	inspect  core.ContainerInspect
+	checks   map[string]core.UpdateCheck
+	cleanup  core.CleanupPreview
 	outputs  map[string]string
 	result   docker.Result
 	err      error
@@ -75,7 +80,8 @@ func (f *fakeExecutor) Execute(_ context.Context, cmd docker.Command) (docker.Re
 	return docker.Result{Command: cmd.String(), Output: output, ExitCode: 0}, nil
 }
 
-func (f *fakeExecutor) Logs(_ context.Context, project core.Project, service string) (string, error) {
+func (f *fakeExecutor) Logs(_ context.Context, project core.Project, service string, options docker.LogOptions) (string, error) {
+	f.logCalls = append(f.logCalls, options)
 	return f.logs + project.Name + ":" + service, nil
 }
 
@@ -88,6 +94,28 @@ func (f *fakeExecutor) SearchImages(_ context.Context, term string) ([]docker.Se
 
 func (f *fakeExecutor) LocalImages(_ context.Context) ([]docker.LocalImage, error) {
 	return f.images, nil
+}
+
+func (f *fakeExecutor) Stats(_ context.Context) ([]core.ContainerStats, error) {
+	return f.stats, f.err
+}
+
+func (f *fakeExecutor) Inspect(_ context.Context, id string) (core.ContainerInspect, error) {
+	if f.inspect.ContainerID == "" {
+		f.inspect.ContainerID = id
+	}
+	return f.inspect, f.err
+}
+
+func (f *fakeExecutor) CheckUpdate(_ context.Context, project core.Project) (core.UpdateCheck, error) {
+	if check, ok := f.checks[project.ID]; ok {
+		return check, f.err
+	}
+	return core.UpdateCheck{ProjectID: project.ID, ProjectName: project.Name, Status: "current"}, f.err
+}
+
+func (f *fakeExecutor) CleanupPreview(_ context.Context) (core.CleanupPreview, error) {
+	return f.cleanup, f.err
 }
 
 func TestAPIsRequireToken(t *testing.T) {
@@ -197,6 +225,48 @@ func TestProjectDetailAndPreviewEndpoints(t *testing.T) {
 	}
 }
 
+func TestProjectMetadataEndpointNormalizesAndPersistsValues(t *testing.T) {
+	inv := &fakeInventory{projects: []core.Project{{ID: "compose:mtp", Name: "mtp", Type: core.ProjectTypeCompose}}}
+	h := New(config.Config{AdminToken: "secret"}, inv, fakeScanner{}, &fakeExecutor{}).Handler()
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/projects/compose:mtp/metadata", strings.NewReader(`{"favorite":true,"tags":[" photos ","Photos","","home"],"aliases":[" primary ","primary","相册"]}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+
+	if r.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+	}
+	if inv.saves != 1 || len(inv.projects) != 1 {
+		t.Fatalf("metadata was not saved: saves=%d projects=%#v", inv.saves, inv.projects)
+	}
+	got := inv.projects[0]
+	if !got.Favorite || !reflect.DeepEqual(got.Tags, []string{"photos", "home"}) || !reflect.DeepEqual(got.Aliases, []string{"primary", "相册"}) {
+		t.Fatalf("metadata was not normalized: %#v", got)
+	}
+}
+
+func TestProjectMetadataEndpointRejectsOverlongItems(t *testing.T) {
+	inv := &fakeInventory{projects: []core.Project{{
+		ID:      "compose:mtp",
+		Name:    "mtp",
+		Type:    core.ProjectTypeCompose,
+		Tags:    []string{"existing"},
+		Aliases: []string{"primary"},
+	}}}
+	h := New(config.Config{AdminToken: "secret"}, inv, fakeScanner{}, &fakeExecutor{}).Handler()
+	req := httptest.NewRequest(http.MethodPatch, "/api/projects/compose:mtp/metadata", strings.NewReader(`{"tags":["replacement"],"aliases":["`+strings.Repeat("a", 65)+`"]}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "64 characters") || inv.saves != 0 {
+		t.Fatalf("status=%d saves=%d body=%s", r.Code, inv.saves, r.Body.String())
+	}
+	if !reflect.DeepEqual(inv.projects[0].Tags, []string{"existing"}) || !reflect.DeepEqual(inv.projects[0].Aliases, []string{"primary"}) {
+		t.Fatalf("invalid patch partially changed metadata: %#v", inv.projects[0])
+	}
+}
+
 func TestPreviewUpdateUsesComposeBuildConfiguration(t *testing.T) {
 	project := core.Project{
 		ID:          "compose:app",
@@ -275,6 +345,9 @@ func TestStaticAssetsAreServed(t *testing.T) {
 		h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
 		if r.Code != http.StatusOK {
 			t.Fatalf("%s status = %d", path, r.Code)
+		}
+		if got := r.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s Cache-Control = %q", path, got)
 		}
 	}
 
@@ -448,12 +521,44 @@ func TestLifecycleAndLogsEndpointsUseProjectContext(t *testing.T) {
 		t.Fatalf("restart failed status=%d commands=%#v", r.Code, exec.commands)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/projects/compose:mtp/logs?service=app", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/projects/compose:mtp/logs?service=app&tail=1000&timestamps=true", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	r = httptest.NewRecorder()
 	h.ServeHTTP(r, req)
 	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), "tail:mtp:app") {
 		t.Fatalf("logs failed status=%d body=%s", r.Code, r.Body.String())
+	}
+	if len(exec.logCalls) != 1 || exec.logCalls[0].Tail != 1000 || !exec.logCalls[0].Timestamps {
+		t.Fatalf("log options = %#v", exec.logCalls)
+	}
+}
+
+func TestContainerStatsEndpointReturnsReadOnlySnapshot(t *testing.T) {
+	exec := &fakeExecutor{stats: []core.ContainerStats{{ContainerID: "abc123", Name: "redis", CPUPercent: 1.25, MemoryUsage: "42MiB / 1GiB", PIDs: 7}}}
+	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{}, fakeScanner{}, exec).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/containers/stats", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), `"containerId":"abc123"`) || len(exec.commands) != 0 {
+		t.Fatalf("status=%d commands=%#v body=%s", r.Code, exec.commands, r.Body.String())
+	}
+}
+
+func TestLogEndpointsValidateTailLimit(t *testing.T) {
+	project := core.Project{ID: "compose:mtp", Name: "mtp", Type: core.ProjectTypeCompose}
+	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, &fakeExecutor{}).Handler()
+	for _, path := range []string{
+		"/api/projects/compose:mtp/logs?tail=5001",
+		"/api/containers/abc123/logs?tail=invalid",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, req)
+		if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "tail must be between 1 and 5000") {
+			t.Fatalf("path=%s status=%d body=%s", path, r.Code, r.Body.String())
+		}
 	}
 }
 
@@ -709,7 +814,7 @@ func TestComposeDeployValidationFailurePreservesExistingFile(t *testing.T) {
 	if err := os.WriteFile(composePath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	exec := &fakeExecutor{err: errors.New("invalid compose"), failCall: 1}
+	exec := &fakeExecutor{}
 	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{}, fakeScanner{}, exec).Handler()
 	body := `{"name":"demo","composePath":"` + composePath + `","composeContent":"services:\n  broken: [\n"}`
 
@@ -718,7 +823,7 @@ func TestComposeDeployValidationFailurePreservesExistingFile(t *testing.T) {
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, req)
 
-	if r.Code != http.StatusInternalServerError {
+	if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "invalid compose yaml") {
 		t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
 	}
 	got, err := os.ReadFile(composePath)
@@ -728,7 +833,7 @@ func TestComposeDeployValidationFailurePreservesExistingFile(t *testing.T) {
 	if string(got) != string(original) {
 		t.Fatalf("compose file changed after validation failure:\n%s", got)
 	}
-	if len(exec.commands) != 1 || !strings.HasSuffix(exec.commands[0], " config") {
+	if len(exec.commands) != 0 {
 		t.Fatalf("commands=%#v", exec.commands)
 	}
 }
@@ -771,7 +876,7 @@ func TestComposeFileHelpersHandleNewFilesAndInvalidDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := dir + "/compose.yml"
-	restore, discardBackup, err := replaceComposeFile(target, stagedPath)
+	restore, discardBackup, err := replaceComposeFile(target, stagedPath, "")
 	if err != nil {
 		t.Fatal(err)
 	}

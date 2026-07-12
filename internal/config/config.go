@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,13 +15,14 @@ import (
 )
 
 type Config struct {
-	ListenAddr string       `json:"listenAddr" yaml:"listenAddr"`
-	AdminToken string       `json:"adminToken" yaml:"adminToken"`
-	AllowLAN   bool         `json:"allowLan" yaml:"allowLan"`
-	ScanPaths  []string     `json:"scanPaths" yaml:"scanPaths"`
-	Update     UpdateConfig `json:"update" yaml:"update"`
-	UI         UIConfig     `json:"ui" yaml:"ui"`
-	Dir        string       `json:"-" yaml:"-"`
+	ListenAddr string           `json:"listenAddr" yaml:"listenAddr"`
+	AdminToken string           `json:"adminToken" yaml:"adminToken"`
+	AllowLAN   bool             `json:"allowLan" yaml:"allowLan"`
+	ScanPaths  []string         `json:"scanPaths" yaml:"scanPaths"`
+	Update     UpdateConfig     `json:"update" yaml:"update"`
+	Automation AutomationConfig `json:"automation" yaml:"automation"`
+	UI         UIConfig         `json:"ui" yaml:"ui"`
+	Dir        string           `json:"-" yaml:"-"`
 }
 
 type UpdateConfig struct {
@@ -29,6 +31,13 @@ type UpdateConfig struct {
 
 type UIConfig struct {
 	Theme string `json:"theme" yaml:"theme"`
+}
+
+type AutomationConfig struct {
+	UpdateCheckIntervalMinutes int    `json:"updateCheckIntervalMinutes" yaml:"updateCheckIntervalMinutes"`
+	WebhookURL                 string `json:"webhookURL" yaml:"webhookURL"`
+	WebhookType                string `json:"webhookType" yaml:"webhookType"`
+	NotifyOnUpdates            bool   `json:"notifyOnUpdates" yaml:"notifyOnUpdates"`
 }
 
 func Load() (Config, error) {
@@ -61,7 +70,7 @@ func Load() (Config, error) {
 	if cfg.AdminToken == "" {
 		cfg.AdminToken = randomToken()
 	}
-	if err := validate(cfg); err != nil {
+	if err := Validate(cfg); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -103,15 +112,19 @@ func defaultConfig(dir string) Config {
 		AllowLAN:   false,
 		ScanPaths:  []string{},
 		Update:     UpdateConfig{RemoveOrphans: false},
+		Automation: AutomationConfig{WebhookType: "generic", NotifyOnUpdates: true},
 		UI:         UIConfig{Theme: "minimal-square"},
 		Dir:        dir,
 	}
 }
 
-func validate(cfg Config) error {
+func Validate(cfg Config) error {
 	host, _, err := net.SplitHostPort(cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("invalid listenAddr: %w", err)
+	}
+	if err := ValidateAutomation(cfg.Automation); err != nil {
+		return err
 	}
 	if cfg.AllowLAN {
 		return nil
@@ -120,6 +133,27 @@ func validate(cfg Config) error {
 		return nil
 	}
 	return fmt.Errorf("listenAddr %q is not localhost; set allowLan: true to bind outside localhost", cfg.ListenAddr)
+}
+
+func ValidateAutomation(cfg AutomationConfig) error {
+	allowedIntervals := map[int]bool{0: true, 60: true, 360: true, 1440: true}
+	if !allowedIntervals[cfg.UpdateCheckIntervalMinutes] {
+		return errors.New("updateCheckIntervalMinutes must be 0, 60, 360, or 1440")
+	}
+	typeName := strings.TrimSpace(cfg.WebhookType)
+	if typeName == "" {
+		typeName = "generic"
+	}
+	if typeName != "generic" && typeName != "ntfy" {
+		return errors.New("webhookType must be generic or ntfy")
+	}
+	if rawURL := strings.TrimSpace(cfg.WebhookURL); rawURL != "" {
+		parsed, err := url.ParseRequestURI(rawURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return errors.New("webhookURL must be an http or https URL")
+		}
+	}
+	return nil
 }
 
 func randomToken() string {
