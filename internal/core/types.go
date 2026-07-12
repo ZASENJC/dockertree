@@ -130,6 +130,7 @@ type ComposeDeploySpec struct {
 
 type ComposeDeployPreview struct {
 	Plan              UpdatePlan `json:"plan"`
+	ComposePath       string     `json:"composePath"`
 	NormalizedContent string     `json:"normalizedContent"`
 	ExistingContent   string     `json:"existingContent,omitempty"`
 	ExistingHash      string     `json:"existingHash,omitempty"`

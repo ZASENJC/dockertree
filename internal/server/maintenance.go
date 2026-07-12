@@ -115,6 +115,8 @@ func (s *Server) restoreConfig(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, errors.New("unsupported backup version"))
 		return
 	}
+	unlock := s.lockConfigUpdates()
+	defer unlock()
 	current := s.currentConfig()
 	restored := bundle.Config
 	restored.AdminToken = current.AdminToken
@@ -124,6 +126,13 @@ func (s *Server) restoreConfig(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(restored.Automation.WebhookType) == "" {
 		restored.Automation.WebhookType = "generic"
 	}
+	projectRoot, scanPaths, err := config.NormalizeProjectPaths(restored.ProjectRoot, restored.ScanPaths)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	restored.ProjectRoot = projectRoot
+	restored.ScanPaths = scanPaths
 	if err := config.Validate(restored); err != nil {
 		badRequest(w, err)
 		return
@@ -139,5 +148,6 @@ func (s *Server) restoreConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.setConfig(restored)
+	s.updateScannerPaths(restored)
 	respond(w, map[string]any{"restored": true, "restartRecommended": true}, nil)
 }

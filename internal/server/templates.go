@@ -53,7 +53,12 @@ func (s *Server) saveTemplate(w http.ResponseWriter, r *http.Request) {
 			badRequest(w, errText("compose template payload is required"))
 			return
 		}
-		if _, err := docker.ComposeDeployPlan(*template.Compose); err != nil {
+		resolved, _, err := s.resolveComposeDeployRequest(*template.Compose, "")
+		if err != nil {
+			badRequest(w, err)
+			return
+		}
+		if _, err := docker.ComposeDeployPlan(resolved); err != nil {
 			badRequest(w, err)
 			return
 		}

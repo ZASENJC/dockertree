@@ -315,7 +315,7 @@ func TestProjectComposeEndpointReadsOnlyMatchedFiles(t *testing.T) {
 	inv := &fakeInventory{projects: []core.Project{{
 		ID: "compose:demo", Name: "demo", Type: core.ProjectTypeCompose, WorkingDir: dir, ConfigFiles: []string{composePath},
 	}}}
-	h := New(config.Config{AdminToken: "secret", ProjectRoot: "/opt"}, inv, &mutableScanner{}, &fakeExecutor{}).Handler()
+	h := New(config.Config{AdminToken: "secret", ProjectRoot: dir}, inv, &mutableScanner{}, &fakeExecutor{}).Handler()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/compose:demo/compose?path="+url.QueryEscape(composePath), nil)
 	req.Header.Set("Authorization", "Bearer secret")

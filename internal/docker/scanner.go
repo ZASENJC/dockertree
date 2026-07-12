@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"dockertree/internal/core"
@@ -17,11 +18,24 @@ import (
 
 type Scanner struct {
 	runner    Runner
+	mu        sync.RWMutex
 	scanPaths []string
 }
 
 func NewScanner(runner Runner, scanPaths []string) *Scanner {
-	return &Scanner{runner: runner, scanPaths: scanPaths}
+	return &Scanner{runner: runner, scanPaths: append([]string(nil), scanPaths...)}
+}
+
+func (s *Scanner) SetScanPaths(scanPaths []string) {
+	s.mu.Lock()
+	s.scanPaths = append([]string(nil), scanPaths...)
+	s.mu.Unlock()
+}
+
+func (s *Scanner) currentScanPaths() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.scanPaths...)
 }
 
 type composeLS struct {
@@ -107,7 +121,7 @@ func (s *Scanner) Scan(ctx context.Context) ([]core.Project, error) {
 		p.Status = aggregateStatus(p.Status, row.State)
 	}
 
-	for _, path := range s.scanPaths {
+	for _, path := range s.currentScanPaths() {
 		discoverComposeFiles(path, projects, now)
 	}
 
@@ -240,7 +254,7 @@ func aggregateStatus(existing, state string) string {
 
 func discoverComposeFiles(root string, projects map[string]*core.Project, now time.Time) {
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !isComposeFileName(d.Name()) {
+		if err != nil || d.IsDir() || d.Type()&fs.ModeSymlink != 0 || !isComposeFileName(d.Name()) {
 			return nil
 		}
 		workingDir := filepath.Dir(path)

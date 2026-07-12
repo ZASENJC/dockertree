@@ -10,12 +10,18 @@ const state = {
   templates: [],
   cleanup: null,
   composePreview: null,
+  composeEditingPath: '',
+  composeEditingProjectId: '',
+  composeDirty: false,
+  projectSettings: { projectRoot: '/opt', scanPaths: ['/opt'] },
+  projectSettingsReady: false,
+  projectSettingsLoadVersion: 0,
   imageSearchResults: [],
   selected: null,
   selectedContainer: null,
   autoRefreshInterval: storedAutoRefreshInterval(),
   autoRefreshTimer: null,
-  scanInFlight: false,
+  scanPromise: null,
   pagination: {
     pageSize: 10,
     containers: 1,
@@ -59,6 +65,7 @@ document.querySelector('#saveToken').addEventListener('click', async () => {
   state.token = tokenInput.value.trim();
   localStorage.setItem('dockertree.token', state.token);
   await loadProjects();
+  await loadProjectSettings();
   await loadLocalImages();
   await loadTemplates();
   if (state.activeView === 'overview') await loadStats({ silent: true });
@@ -86,14 +93,16 @@ document.querySelector('#refreshLocalImages').addEventListener('click', loadLoca
 document.querySelector('#imagePreview').addEventListener('click', () => deployContainer(true));
 document.querySelector('#imageDeploy').addEventListener('click', () => deployContainer(false));
 document.querySelector('#composePreview').addEventListener('click', () => deployCompose(true));
+document.querySelector('#composeSave').addEventListener('click', () => deployCompose(false, true));
 document.querySelector('#composeDeploy').addEventListener('click', () => deployCompose(false));
+document.querySelector('#newComposeProject').addEventListener('click', resetComposeEditor);
+document.querySelector('#saveProjectSettings').addEventListener('click', saveProjectSettings);
 document.querySelector('#imageQuery').addEventListener('input', syncDerivedContainerName);
-for (const id of ['composeName', 'composePath', 'composeContent']) {
-  document.querySelector(`#${id}`).addEventListener('input', () => {
-    state.composePreview = null;
-    document.querySelector('#composeDiff').classList.add('hidden');
-  });
-}
+document.querySelector('#composeName').addEventListener('input', () => {
+  syncComposePath();
+  markComposeDirty();
+});
+document.querySelector('#composeContent').addEventListener('input', markComposeDirty);
 document.querySelector('#refreshStats').addEventListener('click', () => loadStats());
 document.querySelector('#clearFilters').addEventListener('click', clearFilters);
 document.querySelector('#refreshHistory').addEventListener('click', loadOperations);
@@ -171,10 +180,50 @@ function setActiveView(view) {
   if (view === 'maintenance' && state.token) loadAutomationSettings();
 }
 
-async function scanInventory() {
-  if (state.scanInFlight) return state.projects;
-  state.scanInFlight = true;
-  try {
+function invalidateComposePreview() {
+  state.composePreview = null;
+  document.querySelector('#composeDiff').classList.add('hidden');
+}
+
+function markComposeDirty() {
+  state.composeDirty = true;
+  invalidateComposePreview();
+}
+
+function setComposeEditorClean() {
+  state.composeDirty = false;
+}
+
+function bindComposeEditorToScannedProject(projects) {
+  const composePath = state.composeEditingPath;
+  if (!composePath) {
+    state.composeEditingProjectId = '';
+    return;
+  }
+  const project = projects.find((item) => (item.configFiles || []).includes(composePath));
+  state.composeEditingProjectId = project ? project.id : '';
+}
+
+function confirmDiscardComposeChanges() {
+  return !state.composeDirty || confirm('当前 Compose 修改尚未保存，确认放弃这些修改？');
+}
+
+window.addEventListener('beforeunload', (event) => {
+  if (!state.composeDirty) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+async function scanInventory({ queueAfterCurrent = false } = {}) {
+  while (state.scanPromise) {
+    if (!queueAfterCurrent) return state.scanPromise;
+    try {
+      await state.scanPromise;
+    } catch (_err) {
+      // A settings change still needs a fresh scan after an earlier scan fails.
+    }
+  }
+  const scanPromise = (async () => {
     const projects = await api('/api/scan', { method: 'POST' });
     state.projects = projects;
     reconcileSelectedProject();
@@ -183,9 +232,93 @@ async function scanInventory() {
     renderContainers();
     renderProjects();
     return projects;
+  })();
+  state.scanPromise = scanPromise;
+  try {
+    return await scanPromise;
   } finally {
-    state.scanInFlight = false;
+    if (state.scanPromise === scanPromise) state.scanPromise = null;
   }
+}
+
+function setProjectSettingsEnabled(enabled) {
+  state.projectSettingsReady = enabled;
+  for (const id of ['projectRoot', 'scanPaths', 'saveProjectSettings']) {
+    document.querySelector(`#${id}`).disabled = !enabled;
+  }
+}
+
+async function loadProjectSettings(options = {}) {
+  const wasReady = state.projectSettingsReady;
+  const loadVersion = ++state.projectSettingsLoadVersion;
+  setProjectSettingsEnabled(false);
+  try {
+    const settings = await api('/api/settings/projects');
+    if (loadVersion !== state.projectSettingsLoadVersion) return state.projectSettings;
+    state.projectSettings = {
+      projectRoot: settings.projectRoot || '/opt',
+      scanPaths: settings.scanPaths || [],
+    };
+    document.querySelector('#projectRoot').value = state.projectSettings.projectRoot;
+    document.querySelector('#scanPaths').value = state.projectSettings.scanPaths.join('\n');
+    syncComposePath();
+    setProjectSettingsEnabled(true);
+    return state.projectSettings;
+  } catch (err) {
+    if (loadVersion === state.projectSettingsLoadVersion) setProjectSettingsEnabled(wasReady);
+    if (!options.silent) showOperationResult({ error: err.message });
+    return state.projectSettings;
+  }
+}
+
+async function saveProjectSettings() {
+  if (!state.projectSettingsReady) {
+    showOperationResult({ error: '项目目录设置仍在加载，请稍后重试。' });
+    return;
+  }
+  const payload = {
+    projectRoot: document.querySelector('#projectRoot').value.trim(),
+    scanPaths: document.querySelector('#scanPaths').value.split('\n').map((path) => path.trim()).filter(Boolean),
+  };
+  setProjectSettingsEnabled(false);
+  try {
+    const settings = await api('/api/settings/projects', jsonPatch(payload));
+    state.projectSettings = settings;
+    document.querySelector('#projectRoot').value = settings.projectRoot;
+    document.querySelector('#scanPaths').value = (settings.scanPaths || []).join('\n');
+    syncComposePath();
+    const projects = await scanInventory({ queueAfterCurrent: true });
+    showOperationResult({ output: `项目目录已保存，扫描到 ${projects.length} 个项目。` });
+  } catch (err) {
+    showOperationResult({ error: err.message });
+  } finally {
+    setProjectSettingsEnabled(true);
+  }
+}
+
+function syncComposePath() {
+  if (state.composeEditingPath) {
+    document.querySelector('#composePath').value = state.composeEditingPath;
+    return;
+  }
+  const root = (state.projectSettings.projectRoot || '/opt').replace(/\/+$/, '') || '/';
+  const name = document.querySelector('#composeName').value.trim();
+  document.querySelector('#composePath').value = name
+    ? `${root}/${name}/compose.yml`.replace(/^\/\//, '/')
+    : `${root}/<项目名>/compose.yml`.replace(/^\/\//, '/');
+}
+
+function resetComposeEditor() {
+  if (!confirmDiscardComposeChanges()) return;
+  state.composeEditingPath = '';
+  state.composeEditingProjectId = '';
+  state.composePreview = null;
+  document.querySelector('#composeEditorTitle').textContent = '新建 Compose 项目';
+  document.querySelector('#composeName').value = '';
+  document.querySelector('#composeContent').value = '';
+  document.querySelector('#composeDiff').classList.add('hidden');
+  syncComposePath();
+  setComposeEditorClean();
 }
 
 function syncAutoRefresh() {
@@ -199,7 +332,7 @@ function syncAutoRefresh() {
 }
 
 async function runAutoRefresh() {
-  if (document.hidden || !state.token || state.scanInFlight) return;
+  if (document.hidden || !state.token || state.scanPromise) return;
   try {
     await scanInventory();
     if (state.activeView === 'overview') await loadStats({ silent: true });
@@ -795,6 +928,10 @@ function renderProjectDetail(project) {
         <div id="projectLinks" class="link-editor"></div>
       </div>
     </div>
+    <section id="composeFiles" class="compose-files hidden" data-compose-files>
+      <div class="section-heading"><strong>Compose 文件</strong></div>
+      <div data-compose-file-list></div>
+    </section>
     <table class="table">
       <thead><tr><th>服务</th><th>镜像</th><th>状态</th><th>健康</th><th>端口</th><th>挂载</th></tr></thead>
       <tbody></tbody>
@@ -811,6 +948,7 @@ function renderProjectDetail(project) {
   detail.querySelector('#projectTags').value = (project.tags || []).join(', ');
   renderProjectLinks(detail.querySelector('[data-project-links]'), project.links || []);
   renderLinkEditor(detail.querySelector('#projectLinks'), project.links || []);
+  renderComposeFiles(detail.querySelector('[data-compose-files]'), project);
   const services = project.services || [];
   const pagedServices = pageItems(services, state.pagination.services);
   state.pagination.services = pagedServices.currentPage;
@@ -848,6 +986,46 @@ function renderProjectDetail(project) {
   });
   initializeLogViewer(detail.querySelector('[data-log-viewer]'), services, () => logs(project.id));
   return detail;
+}
+
+function renderComposeFiles(container, project) {
+  const files = isStandaloneProject(project) ? [] : (project.configFiles || []);
+  if (!files.length) return;
+  container.classList.remove('hidden');
+  const list = container.querySelector('[data-compose-file-list]');
+  for (const composePath of files) {
+    const row = document.createElement('div');
+    row.className = 'compose-file-row';
+    const path = document.createElement('code');
+    path.textContent = composePath;
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'secondary';
+    edit.textContent = '编辑';
+    edit.addEventListener('click', () => editComposeFile(project, composePath));
+    row.append(path, edit);
+    list.appendChild(row);
+  }
+}
+
+async function editComposeFile(project, composePath) {
+  if (!confirmDiscardComposeChanges()) return;
+  try {
+    const documentData = await api(`/api/projects/${encodeURIComponent(project.id)}/compose?path=${encodeURIComponent(composePath)}`);
+    state.composeEditingPath = documentData.composePath;
+    state.composeEditingProjectId = documentData.projectId;
+    state.composePreview = null;
+    setActiveView('deploy');
+    setDeployMode('compose');
+    document.querySelector('#composeEditorTitle').textContent = `编辑 ${documentData.name}`;
+    document.querySelector('#composeName').value = documentData.name;
+    document.querySelector('#composePath').value = documentData.composePath;
+    document.querySelector('#composeContent').value = documentData.composeContent;
+    document.querySelector('#composeDiff').classList.add('hidden');
+    setComposeEditorClean();
+  } catch (err) {
+    showOperationResult({ error: err.message });
+  }
 }
 
 function ensureProjectVisible(id) {
@@ -1411,6 +1589,7 @@ async function restoreConfig() {
     });
     showOperationResult({ output: result.restartRecommended ? '备份已恢复，建议重启 Dockertree。' : '备份已恢复。' });
     await loadProjects();
+    await loadProjectSettings();
   } catch (err) {
     showOperationResult({ error: err.message });
   }
@@ -1506,11 +1685,16 @@ function applyContainerTemplate(template) {
 }
 
 function applyComposeTemplate(template) {
+  if (!confirmDiscardComposeChanges()) return;
+  state.composeEditingProjectId = '';
+  state.composeEditingPath = template.composePath || '';
   document.querySelector('#composeName').value = template.name || '';
-  document.querySelector('#composePath').value = template.composePath || '';
   document.querySelector('#composeContent').value = template.composeContent || '';
+  document.querySelector('#composeEditorTitle').textContent = state.composeEditingPath ? `编辑 ${template.name || 'Compose 项目'}` : '新建 Compose 项目';
+  syncComposePath();
   state.composePreview = null;
   document.querySelector('#composeDiff').classList.add('hidden');
+  setComposeEditorClean();
 }
 
 async function searchImages() {
@@ -1611,32 +1795,44 @@ function deriveContainerName(image) {
   return base || 'container';
 }
 
-async function deployCompose(previewOnly) {
+async function deployCompose(previewOnly, saveOnly = false) {
   const payload = composeDeployPayload();
   try {
     const preview = await api('/api/deploy/compose/preview', jsonPost(payload));
     state.composePreview = preview;
     renderComposePreview(preview);
-    deployOutput.textContent = formatDeployResult(preview.plan);
+    deployOutput.textContent = saveOnly
+      ? `将保存 Compose 文件：${preview.composePath}`
+      : formatDeployResult(preview.plan);
     if (previewOnly) return;
-    const prompt = preview.overwrites
-      ? '确认使用标准化后的内容覆盖当前 Compose 文件并部署？'
-      : '确认写入标准化后的 Compose 文件并部署？';
+    const prompt = saveOnly
+      ? (preview.overwrites ? '确认覆盖当前 Compose 文件？' : '确认保存新的 Compose 文件？')
+      : (preview.overwrites ? '确认覆盖当前 Compose 文件并部署？' : '确认保存 Compose 文件并部署？');
     if (!confirm(prompt)) return;
     payload.expectedExistingHash = preview.existingHash || '';
-    const result = await apiResult('/api/deploy/compose', jsonPost(payload));
+    const endpoint = saveOnly ? '/api/deploy/compose/save' : '/api/deploy/compose';
+    const result = await apiResult(endpoint, jsonPost(payload));
     deployOutput.textContent = formatDeployResult(result);
     showOperationResult(result);
-    if (!result.error) await loadProjects();
+    if (!result.error) {
+      state.composeEditingPath = result.composePath || preview.composePath || state.composeEditingPath;
+      document.querySelector('#composePath').value = state.composeEditingPath;
+      document.querySelector('#composeEditorTitle').textContent = `编辑 ${payload.name}`;
+      setComposeEditorClean();
+      const projects = await scanInventory({ queueAfterCurrent: true });
+      bindComposeEditorToScannedProject(projects);
+    }
   } catch (err) {
     deployOutput.textContent = err.message;
+    showOperationResult({ error: err.message });
   }
 }
 
 function composeDeployPayload() {
   return {
+    projectId: state.composeEditingProjectId,
     name: document.querySelector('#composeName').value.trim(),
-    composePath: document.querySelector('#composePath').value.trim(),
+    composePath: state.composeEditingPath,
     composeContent: document.querySelector('#composeContent').value,
   };
 }
@@ -1644,6 +1840,7 @@ function composeDeployPayload() {
 function renderComposePreview(preview) {
   const composeDiff = document.querySelector('#composeDiff');
   composeDiff.classList.remove('hidden');
+  document.querySelector('#composePath').value = preview.composePath || document.querySelector('#composePath').value;
   document.querySelector('#existingContent').textContent = preview.existingContent || '新文件';
   document.querySelector('#normalizedContent').textContent = preview.normalizedContent || '';
 }
@@ -1715,6 +1912,7 @@ renderOverview();
 
 if (state.token) {
   loadProjects();
+  loadProjectSettings({ silent: true });
   loadLocalImages();
   loadStats({ silent: true });
   loadTemplates();

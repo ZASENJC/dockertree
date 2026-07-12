@@ -107,6 +107,13 @@
         </section>
         <section id="projectsView" class="panel view-panel hidden" data-view-panel="projects">
           <div class="panel-title">项目</div>
+          <section id="projectSettings" class="project-settings" aria-label="项目目录设置">
+            <div class="project-settings-grid">
+              <label>新建项目根目录<input id="projectRoot" value="/opt" placeholder="/opt" disabled /></label>
+              <label>扫描目录（每行一个）<textarea id="scanPaths" class="compact-textarea" spellcheck="false" placeholder="/opt" disabled></textarea></label>
+              <button id="saveProjectSettings" type="button" disabled>保存并扫描</button>
+            </div>
+          </section>
           <div id="projects" class="entity-list"></div>
           <div id="projectPagination" class="pagination"></div>
         </section>
@@ -162,14 +169,19 @@
               <div id="imageSearchPagination" class="pagination"></div>
             </form>
             <form id="composeDeployForm" class="deploy-form hidden">
-              <div class="field-grid single-field-grid">
+              <div class="section-heading compose-editor-heading">
+                <h2 id="composeEditorTitle">新建 Compose 项目</h2>
+                <button id="newComposeProject" class="secondary" type="button">新建项目</button>
+              </div>
+              <div class="field-grid">
                 <label>项目名称<input id="composeName" name="composeName" placeholder="my-service" /></label>
-                <label>Compose 路径<input id="composePath" name="composePath" placeholder="/opt/stacks/my-service/compose.yml" /></label>
+                <label>Compose 路径<input id="composePath" name="composePath" value="/opt/&lt;项目名&gt;/compose.yml" readonly /></label>
               </div>
               <label>Compose 内容<textarea id="composeContent" name="composeContent" spellcheck="false" placeholder="services:\n  web:\n    image: nginx:latest"></textarea></label>
               <div class="actions inline-actions">
-                <button id="composePreview" class="secondary" type="button">预览命令</button>
-                <button id="composeDeploy" type="button">写入并部署</button>
+                <button id="composePreview" class="secondary" type="button">预览</button>
+                <button id="composeSave" class="secondary" type="button">仅保存</button>
+                <button id="composeDeploy" type="button">保存并部署</button>
               </div>
             </form>
             <section id="composeDiff" class="compose-diff hidden" aria-label="Compose 差异预览">

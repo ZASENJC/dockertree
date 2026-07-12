@@ -401,7 +401,7 @@ func TestBadRequestEndpointsReturnReadableErrors(t *testing.T) {
 		{http.MethodDelete, "/api/images", `{}`, "image ref is required"},
 		{http.MethodPost, "/api/deploy/container/preview", `not-json`, "invalid character"},
 		{http.MethodPost, "/api/deploy/container/preview", `{}`, "image name is required"},
-		{http.MethodPost, "/api/deploy/compose/preview", `{}`, "compose path is required"},
+		{http.MethodPost, "/api/deploy/compose/preview", `{}`, "project name is required"},
 		{http.MethodDelete, "/api/projects/container:solo", ``, "project has no compose file"},
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))

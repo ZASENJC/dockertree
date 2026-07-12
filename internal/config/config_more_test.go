@@ -3,9 +3,39 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestEffectiveScanPathsAlwaysIncludeProjectRootOnce(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want []string
+	}{
+		{
+			name: "adds project root",
+			cfg:  Config{ProjectRoot: "/opt", ScanPaths: []string{"/srv/compose"}},
+			want: []string{"/srv/compose", "/opt"},
+		},
+		{
+			name: "does not duplicate root",
+			cfg:  Config{ProjectRoot: "/opt", ScanPaths: []string{"/opt"}},
+			want: []string{"/opt"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EffectiveScanPaths(tt.cfg); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("EffectiveScanPaths()=%#v want %#v", got, tt.want)
+			}
+		})
+	}
+	if got := EffectiveScanPaths(Config{ProjectRoot: "relative"}); got != nil {
+		t.Fatalf("invalid project root should return nil, got %#v", got)
+	}
+}
 
 func TestLoadAllowsLANWhenExplicit(t *testing.T) {
 	dir := t.TempDir()
