@@ -330,7 +330,15 @@ func TestReadmeDocumentsSingleScriptBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	readme := string(data)
-	for _, want := range []string{"-o dockertree.sh", "./dockertree.sh install", "./dockertree.sh update", "./dockertree.sh uninstall"} {
+	for _, want := range []string{
+		"-o dockertree.sh",
+		"./dockertree.sh install",
+		"./dockertree.sh update",
+		"./dockertree.sh uninstall",
+		"0.0.0.0:27680",
+		"DOCKERTREE_PORT",
+		"不带参数",
+	} {
 		if !strings.Contains(readme, want) {
 			t.Fatalf("single-script documentation missing %q", want)
 		}
@@ -532,7 +540,7 @@ if [ "${1:-}" = "config" ]; then
     set-port)
       port=${3:-}
       case "$port" in ''|*[!0-9]*) exit 2 ;; esac
-      sed "s/^listenAddr: .*:/listenAddr: 0.0.0.0:/" "$config_file" | sed "s/:27680$/:$port/; s/:28681$/:$port/; s/:28682$/:$port/" > "$config_file.tmp"
+      sed "s/^listenAddr: .*/listenAddr: 0.0.0.0:$port/" "$config_file" > "$config_file.tmp"
       mv "$config_file.tmp" "$config_file"
       ;;
     check-port)

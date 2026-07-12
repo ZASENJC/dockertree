@@ -7,7 +7,7 @@ Dockertree 是一个用于管理 Docker 和 Docker Compose 项目的轻量级本
 - 通过 `docker compose ls` 和 Docker Compose 容器标签自动发现现有的 Compose 项目。
 - 对没有 Compose 标签的独立 Docker 容器单独进行管理。
 - 默认将可迁移的配置和清单存储在 `~/.config/dockertree/` 下。
-- 在 `127.0.0.1:27680` 提供简洁的内置 Web UI，并通过令牌保护 API 访问。
+- 默认在 `0.0.0.0:27680` 提供简洁的内置 Web UI，并通过令牌保护 API 访问。
 - 部署前提供保守的更新预览：依次执行 `pull`、可选的 `build`，再执行 `up -d`。
 - 支持两种新服务部署方式：搜索镜像名称并通过 `docker run` 部署，或将 Compose 内容写入用户指定的路径后执行 `docker compose up -d`。
 - 列出本地已下载的 Docker 镜像，并可将其复用于镜像部署。
@@ -50,9 +50,11 @@ chmod 755 dockertree.sh
 ./dockertree.sh uninstall
 ```
 
-默认二进制文件路径为 `~/.local/bin/dockertree`，运行日志和 PID 文件存储在 `~/.local/state/dockertree/` 下。普通卸载会保留 `~/.config/dockertree/`。如需删除二进制文件、运行时文件和全部 Dockertree 配置，请执行 `./dockertree.sh uninstall --purge --yes`。
+不带参数运行 `./dockertree.sh` 会显示包含全部指令的帮助信息。
 
-可通过 `DOCKERTREE_INSTALL_DIR`、`DOCKERTREE_STATE_DIR` 或 `DOCKERTREE_CONFIG_DIR` 覆盖这些路径。
+默认二进制文件路径为 `~/.local/bin/dockertree`，运行日志和 PID 文件存储在 `~/.local/state/dockertree/` 下。新安装会创建默认监听 `0.0.0.0:27680` 的配置。普通卸载会保留 `~/.config/dockertree/`。如需删除二进制文件、运行时文件和全部 Dockertree 配置，请执行 `./dockertree.sh uninstall --purge --yes`。
+
+可通过 `DOCKERTREE_INSTALL_DIR`、`DOCKERTREE_STATE_DIR` 或 `DOCKERTREE_CONFIG_DIR` 覆盖这些路径。安装或启动时如果监听端口已被占用，脚本会提示输入新端口并保存到 `config.yaml`；非交互环境可通过 `DOCKERTREE_PORT=28680 ./dockertree.sh start` 指定并保存端口。
 
 环境自动补全支持 macOS Homebrew，以及 Linux 的 APT、DNF、YUM、Pacman 和 Zypper。macOS 未安装 Homebrew 时，脚本会停止并提示先安装 Homebrew；Linux 安装系统软件时可能要求输入 `sudo` 密码。Docker 安装完成后，脚本会尝试启动 Docker Desktop 或 Docker 服务；如果 daemon 尚未就绪，Dockertree 仍会完成安装并给出提示。`start` 会要求 `docker info` 成功，避免启动一个无法管理 Docker 的实例；Linux 用户还需确保当前账号具有 Docker socket 访问权限。
 
@@ -68,7 +70,7 @@ chmod 755 dockertree.sh
 go run ./cmd/dockertree
 ```
 
-服务器启动时会输出访问地址、配置目录和生成的管理员令牌。打开该地址，粘贴并保存令牌，然后点击 `扫描` 读取本地 Docker 状态。
+服务器启动时会将访问地址、配置目录和生成的管理员令牌写入日志。`./dockertree.sh start` 会从本次启动日志中提取并显示访问地址和管理员令牌。打开该地址，粘贴并保存令牌，然后点击 `扫描` 读取本地 Docker 状态。
 
 测试或迁移时，可以指定一个可迁移的配置目录：
 
@@ -90,7 +92,7 @@ go build -o dockertree ./cmd/dockertree
 - `templates.yaml`：个人容器和 Compose 部署模板。
 - `logs/operations.jsonl`：仅追加写入的脱敏操作历史。
 
-Dockertree 默认只监听本机地址。如需监听局域网地址，必须在 `config.yaml` 中显式设置 `allowLan: true`。
+Dockertree 默认监听所有网络接口，并在 `config.yaml` 中启用 `allowLan: true`。如需限制为本机访问，可将 `listenAddr` 改为 `127.0.0.1:<端口>` 并将 `allowLan` 设为 `false`。
 
 ## 测试
 

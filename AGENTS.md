@@ -31,7 +31,7 @@ go build -o dockertree ./cmd/dockertree
 DOCKERTREE_CONFIG_DIR=/tmp/dockertree-dev go run ./cmd/dockertree
 ```
 
-The app defaults to `127.0.0.1:27680` and prints the admin token on startup.
+The app defaults to `0.0.0.0:27680` with LAN access enabled and prints the admin token on startup.
 
 ## Development Rules
 

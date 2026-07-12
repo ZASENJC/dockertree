@@ -58,6 +58,7 @@ usage() {
 
 可通过 DOCKERTREE_INSTALL_DIR、DOCKERTREE_STATE_DIR、
 DOCKERTREE_CONFIG_DIR 和 DOCKERTREE_SOURCE_DIR 覆盖默认路径。
+设置 DOCKERTREE_PORT 可在非交互环境中指定并保存监听端口。
 设置 DOCKERTREE_AUTO_INSTALL=0 可关闭缺失环境的自动安装。
 EOF
 }
@@ -422,6 +423,61 @@ running_pid() {
   return 1
 }
 
+initialize_config() {
+  mkdir -p "$CONFIG_DIR" || fail "无法创建配置目录"
+  env DOCKERTREE_CONFIG_DIR="$CONFIG_DIR" "$BINARY" config init >/dev/null || fail "无法初始化配置"
+}
+
+configured_port() {
+  env DOCKERTREE_CONFIG_DIR="$CONFIG_DIR" "$BINARY" config port
+}
+
+save_port() {
+  env DOCKERTREE_CONFIG_DIR="$CONFIG_DIR" "$BINARY" config set-port "$1"
+}
+
+port_available() {
+  env DOCKERTREE_CONFIG_DIR="$CONFIG_DIR" "$BINARY" config check-port >/dev/null 2>&1
+}
+
+prepare_listen_port() {
+  initialize_config
+
+  if [ -n "${DOCKERTREE_PORT:-}" ]; then
+    if ! save_port "$DOCKERTREE_PORT" >/dev/null 2>&1; then
+      echo "错误: DOCKERTREE_PORT 必须是 1 到 65535 之间的整数。" >&2
+      return 1
+    fi
+  fi
+
+  while ! port_available; do
+    port=$(configured_port) || return 1
+    echo "端口 $port 已被占用。"
+    printf '%s' "请输入新的监听端口: "
+    if ! IFS= read -r requested_port; then
+      echo >&2
+      echo "错误: 未读取到新端口；可设置 DOCKERTREE_PORT 后重试。" >&2
+      return 1
+    fi
+    if ! save_port "$requested_port" >/dev/null 2>&1; then
+      echo "端口必须是 1 到 65535 之间的整数，请重新输入。" >&2
+    fi
+  done
+}
+
+show_access_details() {
+  start_line=$1
+  recent_log=$(sed -n "${start_line},\$p" "$LOG_FILE" 2>/dev/null)
+  address=$(printf '%s\n' "$recent_log" | sed -n 's/^Dockertree listening on //p' | sed -n '$p')
+  token=$(printf '%s\n' "$recent_log" | sed -n 's/^Admin token: //p' | sed -n '$p')
+  if [ -n "$address" ]; then
+    echo "访问地址: $address"
+  fi
+  if [ -n "$token" ]; then
+    echo "Admin token: $token"
+  fi
+}
+
 install_app() {
   ensure_runtime git go docker compose
   mkdir -p "$INSTALL_DIR" "$STATE_DIR" || fail "无法创建安装目录"
@@ -455,6 +511,11 @@ install_app() {
   activate_manager_update || fail "程序已安装，但管理脚本更新失败"
   if [ -n "$install_checkout" ]; then
     rm -rf "$install_checkout"
+  fi
+  if running_pid >/dev/null 2>&1; then
+    initialize_config
+  else
+    prepare_listen_port || return $?
   fi
 
   trap - EXIT HUP INT TERM
@@ -542,15 +603,20 @@ start_app() {
   validate_timeout DOCKERTREE_START_TIMEOUT "$START_TIMEOUT"
   if pid=$(running_pid); then
     echo "Dockertree 已在运行，PID: $pid"
+    show_access_details 1
     return 0
   fi
   if [ ! -x "$BINARY" ]; then
     fail "尚未安装，请先运行 '$0 install'"
   fi
+  prepare_listen_port || return $?
   ensure_runtime docker compose
   require_docker_access || return 1
 
   mkdir -p "$STATE_DIR" "$CONFIG_DIR" || fail "无法创建运行目录"
+  log_line=$(sed -n '$=' "$LOG_FILE" 2>/dev/null)
+  log_line=${log_line:-0}
+  log_start=$((log_line + 1))
   touch "$LOG_FILE" || fail "无法写入日志: $LOG_FILE"
   chmod 600 "$LOG_FILE" 2>/dev/null || true
 
@@ -586,6 +652,7 @@ start_app() {
 
   echo "Dockertree 已启动，PID: $pid"
   echo "日志: $LOG_FILE"
+  show_access_details "$log_start"
 }
 
 stop_app() {
@@ -736,8 +803,7 @@ case "$command" in
     usage
     ;;
   '')
-    usage >&2
-    exit 2
+    usage
     ;;
   *)
     echo "错误: 未知命令: $command" >&2

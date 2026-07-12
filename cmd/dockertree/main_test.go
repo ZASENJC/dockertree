@@ -77,4 +77,3 @@ func TestRunConfigCommandDetectsOccupiedPort(t *testing.T) {
 		t.Fatalf("config check-port handled=%v err=%v", handled, err)
 	}
 }
-

@@ -107,9 +107,9 @@ func ConfigDir() (string, error) {
 
 func defaultConfig(dir string) Config {
 	return Config{
-		ListenAddr: "127.0.0.1:27680",
+		ListenAddr: "0.0.0.0:27680",
 		AdminToken: randomToken(),
-		AllowLAN:   false,
+		AllowLAN:   true,
 		ScanPaths:  []string{},
 		Update:     UpdateConfig{RemoveOrphans: false},
 		Automation: AutomationConfig{WebhookType: "generic", NotifyOnUpdates: true},
