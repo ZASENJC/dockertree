@@ -15,8 +15,11 @@ func TestLoadCreatesMigratableDefaults(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	if cfg.ListenAddr != "127.0.0.1:27680" {
+	if cfg.ListenAddr != "0.0.0.0:27680" {
 		t.Fatalf("ListenAddr = %q", cfg.ListenAddr)
+	}
+	if !cfg.AllowLAN {
+		t.Fatal("AllowLAN should default to true for the default all-interface binding")
 	}
 	if cfg.AdminToken == "" {
 		t.Fatal("AdminToken should be generated")

@@ -42,6 +42,11 @@ func TestManagerLifecycle(t *testing.T) {
 	if result.exitCode != 0 {
 		t.Fatalf("start failed: %s", result.output)
 	}
+	for _, want := range []string{"访问地址: http://0.0.0.0:27680", "Admin token: test-admin-token"} {
+		if !strings.Contains(result.output, want) {
+			t.Fatalf("start output missing %q: %s", want, result.output)
+		}
+	}
 	pid := readTrimmed(t, filepath.Join(h.stateDir, "dockertree.pid"))
 	if pid == "" {
 		t.Fatal("start did not create a pid file")
@@ -94,6 +99,58 @@ func TestManagerLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(configMarker); err != nil {
 		t.Fatalf("uninstall should preserve config: %v", err)
+	}
+}
+
+func TestManagerWithoutCommandShowsHelp(t *testing.T) {
+	h := newHarness(t)
+	result := h.run(t)
+	if result.exitCode != 0 {
+		t.Fatalf("manager without arguments should show help successfully: code=%d output=%s", result.exitCode, result.output)
+	}
+	for _, command := range []string{"doctor", "install", "update", "start", "stop", "restart", "status", "uninstall", "help"} {
+		if !strings.Contains(result.output, command) {
+			t.Fatalf("help output does not mention %q: %s", command, result.output)
+		}
+	}
+}
+
+func TestManagerPromptsForOccupiedPortDuringInstallAndSavesChoice(t *testing.T) {
+	h := newHarness(t)
+	h.env = append(h.env, "FAKE_OCCUPIED_PORT=27680")
+
+	result := h.runWithInput(t, "28681\n", "install")
+	if result.exitCode != 0 {
+		t.Fatalf("install should accept a replacement port: code=%d output=%s", result.exitCode, result.output)
+	}
+	if !strings.Contains(result.output, "端口 27680 已被占用") {
+		t.Fatalf("install should explain the port conflict: %s", result.output)
+	}
+	config := readTrimmed(t, filepath.Join(h.configDir, "config.yaml"))
+	if !strings.Contains(config, "listenAddr: 0.0.0.0:28681") {
+		t.Fatalf("install did not save the selected port: %s", config)
+	}
+}
+
+func TestManagerPromptsForOccupiedPortDuringStartAndSavesChoice(t *testing.T) {
+	h := newHarness(t)
+	if result := h.run(t, "install"); result.exitCode != 0 {
+		t.Fatalf("install failed: %s", result.output)
+	}
+	h.env = append(h.env, "FAKE_OCCUPIED_PORT=27680")
+
+	result := h.runWithInput(t, "28682\n", "start")
+	if result.exitCode != 0 {
+		t.Fatalf("start should accept a replacement port: code=%d output=%s", result.exitCode, result.output)
+	}
+	for _, want := range []string{"端口 27680 已被占用", "访问地址: http://0.0.0.0:28682"} {
+		if !strings.Contains(result.output, want) {
+			t.Fatalf("start output missing %q: %s", want, result.output)
+		}
+	}
+	config := readTrimmed(t, filepath.Join(h.configDir, "config.yaml"))
+	if !strings.Contains(config, "listenAddr: 0.0.0.0:28682") {
+		t.Fatalf("start did not save the selected port: %s", config)
 	}
 }
 
@@ -460,11 +517,41 @@ func newHarness(t *testing.T) *harness {
 	template := filepath.Join(home, "fake-dockertree")
 	templateBody := `#!/bin/sh
 set -eu
+config_file="${DOCKERTREE_CONFIG_DIR:?}/config.yaml"
+if [ "${1:-}" = "config" ]; then
+  case "${2:-}" in
+    init)
+      mkdir -p "${DOCKERTREE_CONFIG_DIR:?}"
+      if [ ! -f "$config_file" ]; then
+        printf 'listenAddr: 0.0.0.0:27680\nadminToken: test-admin-token\nallowLan: true\n' > "$config_file"
+      fi
+      ;;
+    port)
+      sed -n 's/^listenAddr: .*://p' "$config_file"
+      ;;
+    set-port)
+      port=${3:-}
+      case "$port" in ''|*[!0-9]*) exit 2 ;; esac
+      sed "s/^listenAddr: .*:/listenAddr: 0.0.0.0:/" "$config_file" | sed "s/:27680$/:$port/; s/:28681$/:$port/; s/:28682$/:$port/" > "$config_file.tmp"
+      mv "$config_file.tmp" "$config_file"
+      ;;
+    check-port)
+      port=$(sed -n 's/^listenAddr: .*://p' "$config_file")
+      if [ "$port" = "${FAKE_OCCUPIED_PORT:-}" ]; then exit 3; fi
+      ;;
+    *) exit 2 ;;
+  esac
+  exit 0
+fi
 if [ "${FAKE_DOCKERTREE_FAIL:-0}" = "1" ]; then
   echo "fake startup failure" >&2
   exit 17
 fi
 printf '%s\n' "${DOCKERTREE_CONFIG_DIR:-}" > "${FAKE_DOCKERTREE_RECORD:?}"
+port=$(sed -n 's/^listenAddr: .*://p' "$config_file")
+echo "Dockertree listening on http://0.0.0.0:$port"
+echo "Config dir: ${DOCKERTREE_CONFIG_DIR:-}"
+echo "Admin token: test-admin-token"
 trap 'exit 0' TERM INT
 while :; do
   sleep 1
@@ -636,6 +723,11 @@ type commandResult struct {
 
 func (h *harness) run(t *testing.T, args ...string) commandResult {
 	t.Helper()
+	return h.runWithInput(t, "", args...)
+}
+
+func (h *harness) runWithInput(t *testing.T, input string, args ...string) commandResult {
+	t.Helper()
 	manager := h.manager
 	if manager == "" {
 		manager = managerPath(t)
@@ -643,6 +735,7 @@ func (h *harness) run(t *testing.T, args ...string) commandResult {
 	cmd := exec.Command(manager, args...)
 	cmd.Dir = h.home
 	cmd.Env = append(os.Environ(), h.env...)
+	cmd.Stdin = strings.NewReader(input)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return commandResult{output: string(output)}
