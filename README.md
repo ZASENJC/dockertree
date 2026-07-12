@@ -28,9 +28,29 @@ Dockertree 是一个用于管理 Docker 和 Docker Compose 项目的轻量级本
 
 ## 脚本管理
 
-使用仓库根目录下的脚本构建、安装 Dockertree，并将其作为后台进程管理：
+首次安装可以只下载管理脚本。脚本会检查 Git、Go 1.23+、Docker CLI 和 Docker Compose，缺失时根据操作系统自动安装，然后直接从 GitHub 获取源码并构建：
 
 ```bash
+mkdir -p ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/ZASENJC/dockertree/main/dockertree.sh -o ~/.local/bin/dockertreectl
+chmod 755 ~/.local/bin/dockertreectl
+~/.local/bin/dockertreectl install
+~/.local/bin/dockertreectl start
+```
+
+也可以先克隆仓库，再使用仓库根目录下的脚本：
+
+```bash
+git clone https://github.com/ZASENJC/dockertree.git
+cd dockertree
+./dockertree.sh install
+./dockertree.sh start
+```
+
+管理命令包括：
+
+```bash
+./dockertree.sh doctor
 ./dockertree.sh install
 ./dockertree.sh update
 ./dockertree.sh start
@@ -43,6 +63,10 @@ Dockertree 是一个用于管理 Docker 和 Docker Compose 项目的轻量级本
 默认二进制文件路径为 `~/.local/bin/dockertree`，运行日志和 PID 文件存储在 `~/.local/state/dockertree/` 下。普通卸载会保留 `~/.config/dockertree/`。如需删除二进制文件、运行时文件和全部 Dockertree 配置，请执行 `./dockertree.sh uninstall --purge --yes`。
 
 可通过 `DOCKERTREE_INSTALL_DIR`、`DOCKERTREE_STATE_DIR` 或 `DOCKERTREE_CONFIG_DIR` 覆盖这些路径。
+
+环境自动补全支持 macOS Homebrew，以及 Linux 的 APT、DNF、YUM、Pacman 和 Zypper。macOS 未安装 Homebrew 时，脚本会停止并提示先安装 Homebrew；Linux 安装系统软件时可能要求输入 `sudo` 密码。Docker 安装完成后，脚本会尝试启动 Docker Desktop 或 Docker 服务；如果 daemon 尚未就绪，Dockertree 仍会完成安装并给出提示。
+
+`doctor` 只检查环境，不安装软件或启动 Docker。设置 `DOCKERTREE_AUTO_INSTALL=0` 可以关闭 `install`、`update` 和 `start` 的自动环境补全。
 
 `./dockertree.sh update` 会直接克隆 GitHub 仓库 `https://github.com/ZASENJC/dockertree.git` 的 `main` 分支，在临时目录完成构建后替换已安装的二进制。它不会修改当前源码目录，也不会覆盖配置；如果 Dockertree 原本正在运行，更新成功后会自动重启。GitHub 获取或编译失败时会保留当前二进制和运行中的进程。更新来源可通过 `DOCKERTREE_GITHUB_REPOSITORY` 和 `DOCKERTREE_GITHUB_REF` 覆盖。
 

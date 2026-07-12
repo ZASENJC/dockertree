@@ -56,12 +56,6 @@ fail() {
   exit 1
 }
 
-require_command() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    fail "缺少命令: $1"
-  fi
-}
-
 platform_name() {
   case "$(uname -s 2>/dev/null)" in
     Darwin) printf '%s\n' "macOS" ;;
@@ -83,8 +77,11 @@ go_version_supported() {
   major=${version%%.*}
   remainder=${version#*.}
   minor=${remainder%%.*}
-  case "$major:$minor" in
-    *[!0-9:]*|:*) return 1 ;;
+  case "$major" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  case "$minor" in
+    ''|*[!0-9]*) return 1 ;;
   esac
   [ "$major" -gt "$MIN_GO_MAJOR" ] || {
     [ "$major" -eq "$MIN_GO_MAJOR" ] && [ "$minor" -ge "$MIN_GO_MINOR" ]
