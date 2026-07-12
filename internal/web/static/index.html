@@ -177,14 +177,36 @@
                 <label>项目名称<input id="composeName" name="composeName" placeholder="my-service" /></label>
                 <label>Compose 路径<input id="composePath" name="composePath" value="/opt/&lt;项目名&gt;/compose.yml" readonly /></label>
               </div>
-              <label>Compose 内容<textarea id="composeContent" class="compose-editor" name="composeContent" spellcheck="false" wrap="off" placeholder="services:\n  web:\n    image: nginx:latest"></textarea></label>
+              <div class="compose-editor-launch">
+                <div>
+                  <strong>Compose 内容</strong>
+                  <span id="composeContentSummary">尚未填写 Compose 配置</span>
+                </div>
+                <button id="openComposeEditor" class="secondary" type="button">编辑 Compose</button>
+              </div>
               <div class="actions inline-actions">
-                <button id="composeFormat" class="secondary" type="button">格式化</button>
                 <button id="composePreview" class="secondary" type="button">预览</button>
                 <button id="composeSave" class="secondary" type="button">仅保存</button>
                 <button id="composeDeploy" type="button">保存并部署</button>
               </div>
             </form>
+            <dialog id="composeEditorDialog" class="compose-editor-dialog" aria-labelledby="composeEditorDialogTitle">
+              <div class="compose-editor-dialog-body">
+                <div class="section-heading">
+                  <h2 id="composeEditorDialogTitle">编辑 Compose 配置</h2>
+                  <button id="composeEditorClose" class="secondary" type="button">关闭</button>
+                </div>
+                <div class="compose-code-editor" data-compose-code-editor>
+                  <pre class="compose-highlight" aria-hidden="true"><code data-compose-highlight></code></pre>
+                  <textarea id="composeContent" class="compose-editor" name="composeContent" aria-label="Compose 内容" spellcheck="false" wrap="off" placeholder="services:\n  web:\n    image: nginx:latest"></textarea>
+                </div>
+                <pre id="composeEditorStatus" class="hidden"></pre>
+                <div class="actions inline-actions">
+                  <button id="composeFormat" class="secondary" type="button">格式化</button>
+                  <button id="composeEditorDone" type="button">完成</button>
+                </div>
+              </div>
+            </dialog>
             <section id="composeDiff" class="compose-diff hidden" aria-label="Compose 差异预览">
               <div><h2>当前文件</h2><pre id="existingContent">新文件</pre></div>
               <div><h2>标准化后</h2><pre id="normalizedContent"></pre></div>

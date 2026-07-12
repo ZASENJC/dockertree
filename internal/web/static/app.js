@@ -93,9 +93,14 @@ document.querySelector('#refreshLocalImages').addEventListener('click', loadLoca
 document.querySelector('#imagePreview').addEventListener('click', () => deployContainer(true));
 document.querySelector('#imageDeploy').addEventListener('click', () => deployContainer(false));
 const composeContentEditor = document.querySelector('#composeContent');
+const composeEditorDialog = document.querySelector('#composeEditorDialog');
+const composeEditorStatus = document.querySelector('#composeEditorStatus');
 setupComposeEditor(composeContentEditor);
+document.querySelector('#openComposeEditor').addEventListener('click', showComposeDeployEditor);
+document.querySelector('#composeEditorClose').addEventListener('click', () => composeEditorDialog.close());
+document.querySelector('#composeEditorDone').addEventListener('click', () => composeEditorDialog.close());
 document.querySelector('#composeFormat').addEventListener('click', (event) => {
-  formatComposeEditor(composeContentEditor, deployOutput, event.currentTarget);
+  formatComposeEditor(composeContentEditor, composeEditorStatus, event.currentTarget);
 });
 document.querySelector('#composePreview').addEventListener('click', () => deployCompose(true));
 document.querySelector('#composeSave').addEventListener('click', () => deployCompose(false, true));
@@ -107,7 +112,10 @@ document.querySelector('#composeName').addEventListener('input', () => {
   syncComposePath();
   markComposeDirty();
 });
-document.querySelector('#composeContent').addEventListener('input', markComposeDirty);
+document.querySelector('#composeContent').addEventListener('input', () => {
+  markComposeDirty();
+  updateComposeContentSummary();
+});
 document.querySelector('#refreshStats').addEventListener('click', () => loadStats());
 document.querySelector('#clearFilters').addEventListener('click', clearFilters);
 document.querySelector('#refreshHistory').addEventListener('click', loadOperations);
@@ -168,7 +176,171 @@ function setDeployMode(mode) {
 }
 
 function setupComposeEditor(textarea) {
+  if (textarea.dataset.composeEditorReady === 'true') return;
+  textarea.dataset.composeEditorReady = 'true';
   textarea.addEventListener('keydown', (event) => handleComposeEditorKeydown(event, textarea));
+  textarea.addEventListener('input', () => syncComposeHighlight(textarea));
+  textarea.addEventListener('scroll', () => syncComposeEditorScroll(textarea));
+  syncComposeHighlight(textarea);
+}
+
+function showComposeDeployEditor() {
+  syncComposeHighlight(composeContentEditor);
+  composeEditorStatus.classList.add('hidden');
+  composeEditorDialog.showModal();
+  composeContentEditor.focus();
+}
+
+function updateComposeContentSummary() {
+  const summary = document.querySelector('#composeContentSummary');
+  const content = composeContentEditor.value.trim();
+  if (!content) {
+    summary.textContent = '尚未填写 Compose 配置';
+    return;
+  }
+  const lineCount = composeContentEditor.value.trimEnd().split('\n').length;
+  summary.textContent = `已填写 ${lineCount} 行 Compose 配置`;
+}
+
+function syncComposeHighlight(textarea) {
+  const editor = textarea.closest('[data-compose-code-editor]');
+  const highlight = editor && editor.querySelector('[data-compose-highlight]');
+  if (!highlight) return;
+  const source = textarea.value || '\n';
+  highlight.innerHTML = highlightComposeYAML(source);
+  syncComposeEditorScroll(textarea);
+}
+
+function syncComposeEditorScroll(textarea) {
+  const editor = textarea.closest('[data-compose-code-editor]');
+  const highlight = editor && editor.querySelector('.compose-highlight');
+  if (!highlight) return;
+  highlight.scrollTop = textarea.scrollTop;
+  highlight.scrollLeft = textarea.scrollLeft;
+}
+
+function highlightComposeYAML(source) {
+  return source.split('\n').map(highlightYAMLLine).join('\n');
+}
+
+function highlightYAMLLine(line) {
+  const commentStart = findYAMLCommentStart(line);
+  const content = commentStart === -1 ? line : line.slice(0, commentStart);
+  const comment = commentStart === -1 ? '' : line.slice(commentStart);
+  const colon = findYAMLMappingColon(content);
+  let highlighted;
+
+  if (colon === -1) {
+    highlighted = highlightYAMLValue(content);
+  } else {
+    let keyStart = content.search(/\S/);
+    if (keyStart === -1) keyStart = colon;
+    let prefixEnd = keyStart;
+    if (content.slice(keyStart, keyStart + 2) === '- ') prefixEnd += 2;
+    const prefix = content.slice(0, prefixEnd);
+    const key = content.slice(prefixEnd, colon);
+    const value = content.slice(colon + 1);
+    highlighted = `${escapeHTML(prefix)}<span class="yaml-key">${escapeHTML(key)}</span><span class="yaml-punctuation">:</span>${highlightYAMLValue(value)}`;
+  }
+
+  if (comment) highlighted += `<span class="yaml-comment">${escapeHTML(comment)}</span>`;
+  return highlighted;
+}
+
+function highlightYAMLValue(value) {
+  let result = '';
+  let index = 0;
+  while (index < value.length) {
+    const rest = value.slice(index);
+    const whitespace = rest.match(/^\s+/);
+    if (whitespace) {
+      result += escapeHTML(whitespace[0]);
+      index += whitespace[0].length;
+      continue;
+    }
+
+    const quote = value[index];
+    if (quote === '"' || quote === "'") {
+      let end = index + 1;
+      while (end < value.length) {
+        if (quote === '"' && value[end] === '\\') {
+          end += 2;
+          continue;
+        }
+        if (value[end] === quote) {
+          end++;
+          break;
+        }
+        end++;
+      }
+      result += `<span class="yaml-string">${escapeHTML(value.slice(index, end))}</span>`;
+      index = end;
+      continue;
+    }
+
+    const keyword = rest.match(/^(?:true|false|null|yes|no|on|off)(?=$|\s|[\],}])/i);
+    if (keyword) {
+      result += `<span class="yaml-keyword">${escapeHTML(keyword[0])}</span>`;
+      index += keyword[0].length;
+      continue;
+    }
+    const number = rest.match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?=$|\s|[\],}])/);
+    if (number) {
+      result += `<span class="yaml-number">${escapeHTML(number[0])}</span>`;
+      index += number[0].length;
+      continue;
+    }
+    if (/^[\[\]{},]$/.test(value[index]) || (value[index] === '-' && /\s/.test(value[index + 1] || ''))) {
+      result += `<span class="yaml-punctuation">${escapeHTML(value[index])}</span>`;
+      index++;
+      continue;
+    }
+
+    const scalar = rest.match(/^[^\s\[\]{},]+/);
+    const token = scalar ? scalar[0] : value[index];
+    result += `<span class="yaml-string">${escapeHTML(token)}</span>`;
+    index += token.length;
+  }
+  return result;
+}
+
+function findYAMLCommentStart(line) {
+  let quote = '';
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quote === '"' && char === '\\') {
+      index++;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = quote === char ? '' : (quote || char);
+      continue;
+    }
+    if (!quote && char === '#' && (index === 0 || /\s/.test(line[index - 1]))) return index;
+  }
+  return -1;
+}
+
+function findYAMLMappingColon(line) {
+  let quote = '';
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quote === '"' && char === '\\') {
+      index++;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = quote === char ? '' : (quote || char);
+      continue;
+    }
+    if (!quote && char === ':' && (index === line.length - 1 || /\s/.test(line[index + 1]))) return index;
+  }
+  return -1;
+}
+
+function escapeHTML(value) {
+  const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return value.replace(/[&<>"']/g, (char) => entities[char]);
 }
 
 function handleComposeEditorKeydown(event, textarea) {
@@ -403,6 +575,8 @@ function resetComposeEditor() {
   document.querySelector('#composeEditorTitle').textContent = '新建 Compose 项目';
   document.querySelector('#composeName').value = '';
   document.querySelector('#composeContent').value = '';
+  syncComposeHighlight(composeContentEditor);
+  updateComposeContentSummary();
   document.querySelector('#composeDiff').classList.add('hidden');
   syncComposePath();
   setComposeEditorClean();
@@ -1109,7 +1283,10 @@ function renderProjectDetail(project) {
           <button class="secondary" type="button" data-compose-cancel>关闭</button>
         </div>
         <p class="path" data-compose-editor-path></p>
-        <label>Compose 内容<textarea data-compose-editor-content class="compose-editor" spellcheck="false" wrap="off"></textarea></label>
+        <div class="compose-code-editor" data-compose-code-editor>
+          <pre class="compose-highlight" aria-hidden="true"><code data-compose-highlight></code></pre>
+          <textarea data-compose-editor-content class="compose-editor" aria-label="Compose 内容" spellcheck="false" wrap="off"></textarea>
+        </div>
         <pre class="hidden" data-compose-editor-status></pre>
         <div class="actions inline-actions">
           <button class="secondary" type="button" data-compose-format>格式化</button>
@@ -1212,7 +1389,9 @@ async function editComposeFile(project, composePath) {
     dialog.dataset.composePath = documentData.composePath;
     dialog.querySelector('#projectComposeEditorTitle').textContent = `编辑 ${documentData.name}`;
     dialog.querySelector('[data-compose-editor-path]').textContent = documentData.composePath;
-    dialog.querySelector('[data-compose-editor-content]').value = documentData.composeContent;
+    const composeEditor = dialog.querySelector('[data-compose-editor-content]');
+    composeEditor.value = documentData.composeContent;
+    syncComposeHighlight(composeEditor);
     dialog.querySelector('[data-compose-editor-status]').classList.add('hidden');
     dialog.showModal();
   } catch (err) {
@@ -2071,6 +2250,8 @@ function applyComposeTemplate(template) {
   state.composeEditingPath = template.composePath || '';
   document.querySelector('#composeName').value = template.name || '';
   document.querySelector('#composeContent').value = template.composeContent || '';
+  syncComposeHighlight(composeContentEditor);
+  updateComposeContentSummary();
   document.querySelector('#composeEditorTitle').textContent = state.composeEditingPath ? `编辑 ${template.name || 'Compose 项目'}` : '新建 Compose 项目';
   syncComposePath();
   state.composePreview = null;

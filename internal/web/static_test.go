@@ -388,6 +388,69 @@ func TestComposeEditorsSupportFormattingAndKeyboardIndentation(t *testing.T) {
 	}
 }
 
+func TestComposeDeployUsesSyntaxHighlightedDialogEditor(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssData, err := Assets.ReadFile("static/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(indexData)
+	js := string(appData)
+	css := string(cssData)
+
+	formStart := strings.Index(html, `id="composeDeployForm"`)
+	if formStart == -1 {
+		t.Fatal("Compose deploy form is missing")
+	}
+	formEndOffset := strings.Index(html[formStart:], "</form>")
+	if formEndOffset == -1 {
+		t.Fatal("Compose deploy form is not closed")
+	}
+	form := html[formStart : formStart+formEndOffset]
+	for _, want := range []string{`id="openComposeEditor"`, `id="composeContentSummary"`, "编辑 Compose"} {
+		if !strings.Contains(form, want) {
+			t.Fatalf("Compose deploy form editor launcher missing %q", want)
+		}
+	}
+	if strings.Contains(form, `id="composeContent"`) {
+		t.Fatal("Compose deploy form must open the editor dialog instead of showing an inline textarea")
+	}
+
+	for _, want := range []string{
+		`id="composeEditorDialog"`, `data-compose-code-editor`, `data-compose-highlight`,
+		`id="composeContent" class="compose-editor"`, `id="composeFormat"`, `id="composeEditorDone"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("Compose deploy editor dialog missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"showComposeDeployEditor", "composeEditorDialog.showModal()", "syncComposeHighlight",
+		"highlightComposeYAML", "highlightYAMLValue", "findYAMLCommentStart", "escapeHTML",
+		"data-compose-highlight", "composeContentSummary", "composeContentEditor.value.trimEnd().split('\\n').length",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("Compose syntax highlighting behavior missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		".compose-code-editor", ".compose-highlight", ".yaml-key", ".yaml-string",
+		".yaml-number", ".yaml-keyword", ".yaml-comment", "color: transparent", "caret-color:",
+		".compose-editor-launch {\n    grid-template-columns: minmax(0, 1fr);",
+	} {
+		if !strings.Contains(css, want) {
+			t.Fatalf("Compose syntax highlighting styles missing %q", want)
+		}
+	}
+}
+
 func TestProjectRedeployStartsLiveLogRefreshImmediately(t *testing.T) {
 	appData, err := Assets.ReadFile("static/app.js")
 	if err != nil {

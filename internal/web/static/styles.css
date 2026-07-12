@@ -16,6 +16,15 @@
   --pre-bg: #111111;
   --pre-ink: #f3f3ed;
   --focus: #21756d;
+  --code-bg: #f7f7f8;
+  --code-ink: #24292f;
+  --code-key: #0451a5;
+  --code-string: #a31515;
+  --code-number: #098658;
+  --code-keyword: #0000ff;
+  --code-comment: #008000;
+  --code-punctuation: #57606a;
+  --code-selection: rgba(33, 117, 109, 0.26);
 }
 
 :root[data-theme="dark"] {
@@ -35,6 +44,15 @@
   --pre-bg: #050607;
   --pre-ink: #eeeeea;
   --focus: #72b7ad;
+  --code-bg: #0d1117;
+  --code-ink: #d4d4d4;
+  --code-key: #9cdcfe;
+  --code-string: #ce9178;
+  --code-number: #b5cea8;
+  --code-keyword: #569cd6;
+  --code-comment: #6a9955;
+  --code-punctuation: #d4d4d4;
+  --code-selection: rgba(38, 79, 120, 0.72);
 }
 
 * {
@@ -127,6 +145,109 @@ textarea {
   line-height: 1.55;
   white-space: pre;
   overflow-wrap: normal;
+}
+
+.compose-editor-launch {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  padding: 10px;
+}
+
+.compose-editor-launch div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.compose-editor-launch span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.compose-code-editor {
+  position: relative;
+  min-height: min(56vh, 620px);
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+  overflow: hidden;
+}
+
+.compose-code-editor .compose-highlight,
+.compose-code-editor .compose-editor {
+  width: 100%;
+  min-height: min(56vh, 620px);
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.compose-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: var(--code-bg);
+  color: var(--code-ink);
+  pointer-events: none;
+}
+
+.compose-highlight code {
+  font: inherit;
+  white-space: inherit;
+}
+
+.compose-code-editor .compose-editor {
+  position: relative;
+  z-index: 1;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--code-ink);
+  -webkit-text-fill-color: transparent;
+}
+
+.compose-code-editor .compose-editor::placeholder {
+  color: var(--muted);
+  -webkit-text-fill-color: var(--muted);
+}
+
+.compose-code-editor .compose-editor::selection {
+  background: var(--code-selection);
+}
+
+.yaml-key {
+  color: var(--code-key);
+}
+
+.yaml-string {
+  color: var(--code-string);
+}
+
+.yaml-number {
+  color: var(--code-number);
+}
+
+.yaml-keyword {
+  color: var(--code-keyword);
+}
+
+.yaml-comment {
+  color: var(--code-comment);
+}
+
+.yaml-punctuation {
+  color: var(--code-punctuation);
 }
 
 button:focus-visible,
@@ -710,10 +831,6 @@ details label {
   font-size: 16px;
 }
 
-.compose-editor-dialog textarea {
-  min-height: min(56vh, 620px);
-}
-
 .inspect-panel {
   display: grid;
 }
@@ -1066,6 +1183,14 @@ pre {
 
   .compose-diff {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .compose-editor-launch {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .compose-editor-launch button {
+    width: 100%;
   }
 
   .history-controls,
