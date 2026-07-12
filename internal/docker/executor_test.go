@@ -201,6 +201,33 @@ func TestUpdateCommandsKeepPathWithSpacesAsSingleArg(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateCommandsTargetOnlySelectedComposeService(t *testing.T) {
+	project := core.Project{Type: core.ProjectTypeCompose, WorkingDir: "/srv/photo tree", ConfigFiles: []string{"/srv/photo tree/compose.yml"}}
+	commands := ServiceUpdateCommands(project, " web ", true)
+	want := []Command{
+		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "pull", "web"}, Dir: "/srv/photo tree"},
+		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "build", "web"}, Dir: "/srv/photo tree"},
+		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "up", "-d", "--no-deps", "web"}, Dir: "/srv/photo tree"},
+	}
+	if !reflect.DeepEqual(commands, want) {
+		t.Fatalf("commands = %#v, want %#v", commands, want)
+	}
+
+	commands = ServiceUpdateCommands(project, "web", false)
+	if len(commands) != 2 || commands[1].String() != "docker compose -f '/srv/photo tree/compose.yml' up -d --no-deps web" {
+		t.Fatalf("image-only service commands = %#v", commands)
+	}
+}
+
+func TestServiceUpdateCheckCommandTargetsOnlySelectedComposeService(t *testing.T) {
+	project := core.Project{Type: core.ProjectTypeCompose, WorkingDir: "/srv/app", ConfigFiles: []string{"/srv/app/compose.yml"}}
+	cmd := ServiceUpdateCheckCommand(project, " api ")
+	want := Command{Name: "docker", Args: []string{"compose", "-f", "/srv/app/compose.yml", "--dry-run", "pull", "api"}, Dir: "/srv/app"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %#v, want %#v", cmd, want)
+	}
+}
+
 func TestComposeConfigRequiresBuildUsesBuildField(t *testing.T) {
 	project := core.Project{
 		Type:        core.ProjectTypeCompose,
@@ -227,6 +254,21 @@ func TestComposeConfigRequiresBuildUsesBuildField(t *testing.T) {
 	}
 	if _, err := ComposeConfigRequiresBuild(`{"services":`); err == nil {
 		t.Fatal("invalid compose config JSON should fail")
+	}
+}
+
+func TestComposeServiceRequiresBuildUsesSelectedService(t *testing.T) {
+	config := `{"services":{"api":{"image":"registry/app:dev","build":{"context":"."}},"db":{"image":"postgres:16"}}}`
+	requiresBuild, err := ComposeServiceRequiresBuild(config, "api")
+	if err != nil || !requiresBuild {
+		t.Fatalf("api requiresBuild=%v err=%v", requiresBuild, err)
+	}
+	requiresBuild, err = ComposeServiceRequiresBuild(config, "db")
+	if err != nil || requiresBuild {
+		t.Fatalf("db requiresBuild=%v err=%v", requiresBuild, err)
+	}
+	if _, err := ComposeServiceRequiresBuild(config, "missing"); err == nil {
+		t.Fatal("missing service should fail")
 	}
 }
 

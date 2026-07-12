@@ -320,6 +320,75 @@ func TestProjectDirectoryAndComposeEditingWorkflowAssets(t *testing.T) {
 	}
 }
 
+func TestProjectComposeEditingStaysInDetailModalAndOnlySaves(t *testing.T) {
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssData, err := Assets.ReadFile("static/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(appData)
+	start := strings.Index(js, "async function editComposeFile(project, composePath)")
+	end := strings.Index(js[start:], "\nfunction ensureProjectVisible")
+	if start == -1 || end == -1 {
+		t.Fatal("could not locate project Compose editor workflow")
+	}
+	workflow := js[start : start+end]
+	for _, want := range []string{"showModal()", "saveProjectCompose", "/api/deploy/compose/save", "dialog.close()"} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("project Compose modal workflow missing %q: %s", want, workflow)
+		}
+	}
+	for _, unwanted := range []string{"setActiveView('deploy')", "setDeployMode('compose')", "/api/deploy/compose\""} {
+		if strings.Contains(workflow, unwanted) {
+			t.Fatalf("project Compose editor should not deploy or leave detail; found %q", unwanted)
+		}
+	}
+	if !strings.Contains(string(cssData), ".compose-editor-dialog") {
+		t.Fatal("Compose editor dialog styles are missing")
+	}
+}
+
+func TestProjectRedeployStartsLiveLogRefreshImmediately(t *testing.T) {
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(appData)
+	if !strings.Contains(js, "重新部署/更新") || !strings.Contains(js, "startProjectLogRefresh") {
+		t.Fatal("project redeploy label or live log refresh helper is missing")
+	}
+	start := strings.Index(js, "async function deploy(id)")
+	end := strings.Index(js[start:], "\nasync function deleteContainer")
+	if start == -1 || end == -1 {
+		t.Fatal("could not locate deploy workflow")
+	}
+	workflow := js[start : start+end]
+	refresh := strings.Index(workflow, "startProjectLogRefresh(id)")
+	request := strings.Index(workflow, "/actions/deploy")
+	if refresh == -1 || request == -1 || refresh > request {
+		t.Fatalf("live logs must start before deploy request: %s", workflow)
+	}
+}
+
+func TestContainerDetailSupportsIndividualUpdateCheckAndRedeploy(t *testing.T) {
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(appData)
+	for _, want := range []string{
+		"data-check-update", "检查更新", "data-deploy", "拉取并重新部署",
+		"containerCheckUpdate", "/actions/check-update", "containerDeploy", "/actions/deploy",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("container update UI missing %q", want)
+		}
+	}
+}
+
 func TestComposeEditorProtectsExistingProjectsAndPendingChanges(t *testing.T) {
 	indexData, err := Assets.ReadFile("static/index.html")
 	if err != nil {

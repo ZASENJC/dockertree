@@ -588,6 +588,77 @@ func TestContainerLifecycleAndLogsEndpointsUseContainerID(t *testing.T) {
 	}
 }
 
+func TestContainerUpdateCheckAndDeployTargetOnlySelectedComposeService(t *testing.T) {
+	project := core.Project{
+		ID:          "compose:app",
+		Name:        "app",
+		Type:        core.ProjectTypeCompose,
+		WorkingDir:  "/srv/app",
+		ConfigFiles: []string{"/srv/app/compose.yml"},
+		Services: []core.Service{
+			{Name: "web", ContainerID: "web123", Image: "registry/web:latest"},
+			{Name: "worker", ContainerID: "worker456", Image: "registry/worker:latest"},
+		},
+	}
+	configCommand := "docker compose -f /srv/app/compose.yml config --format json"
+	checkCommand := "docker compose -f /srv/app/compose.yml --dry-run pull web"
+	exec := &fakeExecutor{outputs: map[string]string{
+		configCommand: `{"services":{"web":{"image":"registry/web:latest","build":{"context":"."}},"worker":{"image":"registry/worker:latest"}}}`,
+		checkCommand:  "DRY-RUN MODE - web Pulled",
+	}}
+	inv := &fakeInventory{projects: []core.Project{project}}
+	scanner := fakeScanner{projects: []core.Project{project}}
+	h := New(config.Config{AdminToken: "secret"}, inv, scanner, exec).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/containers/web123/actions/check-update", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), `"status":"available"`) || !strings.Contains(r.Body.String(), checkCommand) {
+		t.Fatalf("check status=%d body=%s commands=%#v", r.Code, r.Body.String(), exec.commands)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/containers/web123/actions/deploy", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	r = httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != http.StatusOK {
+		t.Fatalf("deploy status=%d body=%s", r.Code, r.Body.String())
+	}
+	want := []string{
+		checkCommand,
+		configCommand,
+		"docker compose -f /srv/app/compose.yml pull web",
+		"docker compose -f /srv/app/compose.yml build web",
+		"docker compose -f /srv/app/compose.yml up -d --no-deps web",
+	}
+	if !reflect.DeepEqual(exec.commands, want) {
+		t.Fatalf("commands=%#v want=%#v", exec.commands, want)
+	}
+	if inv.saves != 1 {
+		t.Fatalf("inventory saves=%d", inv.saves)
+	}
+}
+
+func TestContainerUpdateRejectsStandaloneContainers(t *testing.T) {
+	standalone := core.Project{
+		ID:       "container:redis",
+		Name:     "redis",
+		Type:     core.ProjectTypeStandalone,
+		Services: []core.Service{{Name: "redis", ContainerID: "redis123", Image: "redis:7"}},
+	}
+	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{standalone}}, fakeScanner{}, &fakeExecutor{}).Handler()
+	for _, action := range []string{"check-update", "deploy"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/containers/redis123/actions/"+action, nil)
+		req.Header.Set("Authorization", "Bearer secret")
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, req)
+		if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "Compose") {
+			t.Fatalf("%s status=%d body=%s", action, r.Code, r.Body.String())
+		}
+	}
+}
+
 func TestLifecycleRefreshesInventoryAfterSuccess(t *testing.T) {
 	inv := &fakeInventory{projects: []core.Project{{
 		ID:          "compose:mtp",
