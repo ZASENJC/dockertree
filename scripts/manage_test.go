@@ -159,10 +159,55 @@ func TestManagerRejectsUnknownCommands(t *testing.T) {
 	if result.exitCode != 2 {
 		t.Fatalf("unknown command code = %d, want 2; output=%s", result.exitCode, result.output)
 	}
-	for _, command := range []string{"install", "update", "start", "stop", "restart", "status", "uninstall"} {
+	for _, command := range []string{"doctor", "install", "update", "start", "stop", "restart", "status", "uninstall"} {
 		if !strings.Contains(result.output, command) {
 			t.Fatalf("help output does not mention %q: %s", command, result.output)
 		}
+	}
+}
+
+func TestManagerDoctorReportsCompleteRuntime(t *testing.T) {
+	h := newHarness(t)
+	result := h.run(t, "doctor")
+	if result.exitCode != 0 {
+		t.Fatalf("doctor failed for complete runtime: %s", result.output)
+	}
+	for _, want := range []string{"Git", "Go", "Docker CLI", "Docker Compose", "运行环境已就绪"} {
+		if !strings.Contains(result.output, want) {
+			t.Fatalf("doctor output missing %q: %s", want, result.output)
+		}
+	}
+}
+
+func TestManagerInstallAutoProvisionsMissingLinuxRuntime(t *testing.T) {
+	h := newMissingLinuxRuntimeHarness(t)
+	result := h.run(t, "install")
+	if result.exitCode != 0 {
+		t.Fatalf("install should provision missing runtime: %s", result.output)
+	}
+	assertExecutable(t, filepath.Join(h.installDir, "dockertree"))
+	packageLog := readTrimmed(t, filepath.Join(h.home, "packages.log"))
+	for _, want := range []string{"update", "install -y git", "install -y golang-go", "install -y docker.io", "install -y docker-compose-v2"} {
+		if !strings.Contains(packageLog, want) {
+			t.Fatalf("package manager log missing %q: %s", want, packageLog)
+		}
+	}
+	for _, want := range []string{"检测到 Linux", "正在自动补全运行环境", "运行环境已就绪", "安装完成"} {
+		if !strings.Contains(result.output, want) {
+			t.Fatalf("install output missing %q: %s", want, result.output)
+		}
+	}
+}
+
+func TestManagerCanDisableAutomaticRuntimeProvisioning(t *testing.T) {
+	h := newMissingLinuxRuntimeHarness(t)
+	h.env = append(h.env, "DOCKERTREE_AUTO_INSTALL=0")
+	result := h.run(t, "install")
+	if result.exitCode == 0 || !strings.Contains(result.output, "自动安装已关闭") {
+		t.Fatalf("disabled provisioning should report missing runtime: code=%d output=%s", result.exitCode, result.output)
+	}
+	if _, err := os.Stat(filepath.Join(h.home, "packages.log")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("disabled provisioning invoked the package manager: %v", err)
 	}
 }
 
@@ -235,6 +280,10 @@ func configureFakeGit(t *testing.T, h *harness) {
 	fakeGit := filepath.Join(h.home, "fake-bin", "git")
 	fakeGitBody := `#!/bin/sh
 set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "git version 2.50.0"
+  exit 0
+fi
 printf '%s\n' "$*" >> "${FAKE_GIT_LOG:?}"
 target=""
 for arg in "$@"; do
@@ -279,6 +328,10 @@ done
 	fakeGo := filepath.Join(fakeBin, "go")
 	fakeGoBody := `#!/bin/sh
 set -eu
+if [ "${1:-}" = "version" ]; then
+  echo "go version go1.23.0 test/amd64"
+  exit 0
+fi
 printf '%s|%s\n' "$PWD" "$*" >> "${FAKE_GO_LOG:?}"
 case "$PWD" in
   *dockertree-update-*/source)
@@ -305,6 +358,23 @@ chmod 755 "$output"
 `
 	writeExecutable(t, fakeGo, fakeGoBody)
 
+	fakeGit := filepath.Join(fakeBin, "git")
+	writeExecutable(t, fakeGit, "#!/bin/sh\necho 'git version 2.50.0'\n")
+	fakeDocker := filepath.Join(fakeBin, "docker")
+	fakeDockerBody := `#!/bin/sh
+set -eu
+case "${1:-}" in
+  --version) echo "Docker version 28.0.0, build test" ;;
+  compose)
+    if [ "${2:-}" = "version" ]; then
+      echo "Docker Compose version v2.35.0"
+    fi
+    ;;
+  info) exit 0 ;;
+esac
+`
+	writeExecutable(t, fakeDocker, fakeDockerBody)
+
 	return &harness{
 		home:       home,
 		installDir: installDir,
@@ -325,6 +395,88 @@ chmod 755 "$output"
 			"FAKE_DOCKERTREE_RECORD=" + filepath.Join(home, "dockertree.record"),
 		},
 	}
+}
+
+func newMissingLinuxRuntimeHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newHarness(t)
+	fakeBin := filepath.Join(h.home, "fake-bin")
+	for _, name := range []string{"go", "git", "docker"} {
+		if err := os.Remove(filepath.Join(fakeBin, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"cat", "chmod", "cp", "dirname", "env", "mkdir", "mktemp", "mv", "nohup", "ps", "rm", "rmdir", "sed", "sleep", "tail", "touch"} {
+		target, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatalf("locate test command %s: %v", name, err)
+		}
+		if err := os.Symlink(target, filepath.Join(fakeBin, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeExecutable(t, filepath.Join(fakeBin, "uname"), "#!/bin/sh\nif [ \"${1:-}\" = \"-m\" ]; then echo x86_64; else echo Linux; fi\n")
+	writeExecutable(t, filepath.Join(fakeBin, "id"), "#!/bin/sh\necho 0\n")
+
+	runtimeDir := filepath.Join(h.home, "runtime-templates")
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(runtimeDir, "git"), "#!/bin/sh\necho 'git version 2.50.0'\n")
+	goTemplate := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "version" ]; then
+  echo "go version go1.23.0 linux/amd64"
+  exit 0
+fi
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then shift; output="${1:-}"; fi
+  shift
+done
+cp "${FAKE_DOCKERTREE_TEMPLATE:?}" "$output"
+chmod 755 "$output"
+`
+	writeExecutable(t, filepath.Join(runtimeDir, "go"), goTemplate)
+	dockerTemplate := `#!/bin/sh
+set -eu
+case "${1:-}" in
+  --version) echo "Docker version 28.0.0, build test" ;;
+  compose)
+    if [ "${2:-}" = "version" ] && [ -f "${FAKE_RUNTIME_DIR:?}/compose.ready" ]; then
+      echo "Docker Compose version v2.35.0"
+      exit 0
+    fi
+    exit 1
+    ;;
+  info) exit 0 ;;
+esac
+`
+	writeExecutable(t, filepath.Join(runtimeDir, "docker"), dockerTemplate)
+	aptBody := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${FAKE_PACKAGE_LOG:?}"
+case " $* " in
+  *" git "*) cp "${FAKE_RUNTIME_DIR:?}/git" "${FAKE_BIN:?}/git" ;;
+esac
+case " $* " in
+  *" golang-go "*) cp "${FAKE_RUNTIME_DIR:?}/go" "${FAKE_BIN:?}/go" ;;
+esac
+case " $* " in
+  *" docker.io "*) cp "${FAKE_RUNTIME_DIR:?}/docker" "${FAKE_BIN:?}/docker" ;;
+esac
+case " $* " in
+  *" docker-compose-v2 "*) touch "${FAKE_RUNTIME_DIR:?}/compose.ready" ;;
+esac
+`
+	writeExecutable(t, filepath.Join(fakeBin, "apt-get"), aptBody)
+	h.env = append(removeEnv(h.env, "PATH"),
+		"PATH="+fakeBin,
+		"FAKE_BIN="+fakeBin,
+		"FAKE_RUNTIME_DIR="+runtimeDir,
+		"FAKE_PACKAGE_LOG="+filepath.Join(h.home, "packages.log"),
+	)
+	return h
 }
 
 type commandResult struct {
