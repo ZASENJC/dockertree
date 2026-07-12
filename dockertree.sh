@@ -20,12 +20,16 @@ PID_FILE=$STATE_DIR/dockertree.pid
 LOG_FILE=$STATE_DIR/dockertree.log
 START_TIMEOUT=${DOCKERTREE_START_TIMEOUT:-1}
 STOP_TIMEOUT=${DOCKERTREE_STOP_TIMEOUT:-10}
+AUTO_INSTALL=${DOCKERTREE_AUTO_INSTALL:-1}
+MIN_GO_MAJOR=1
+MIN_GO_MINOR=23
 
 usage() {
   cat <<EOF
 用法: $0 <命令> [选项]
 
 命令:
+  doctor                  检查 Git、Go、Docker 和 Compose
   install                 编译并安装 Dockertree
   update                  从 GitHub 更新 Dockertree
   start                   后台启动 Dockertree
@@ -43,6 +47,7 @@ usage() {
 
 可通过 DOCKERTREE_INSTALL_DIR、DOCKERTREE_STATE_DIR、
 DOCKERTREE_CONFIG_DIR 和 DOCKERTREE_SOURCE_DIR 覆盖默认路径。
+设置 DOCKERTREE_AUTO_INSTALL=0 可关闭缺失环境的自动安装。
 EOF
 }
 
@@ -55,6 +60,245 @@ require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     fail "缺少命令: $1"
   fi
+}
+
+platform_name() {
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) printf '%s\n' "macOS" ;;
+    Linux) printf '%s\n' "Linux" ;;
+    *) printf '%s\n' "unsupported" ;;
+  esac
+}
+
+go_version_supported() {
+  command -v go >/dev/null 2>&1 || return 1
+  version_output=$(go version 2>/dev/null) || return 1
+  version=""
+  for token in $version_output; do
+    case "$token" in
+      go[0-9]*) version=${token#go}; break ;;
+    esac
+  done
+  [ -n "$version" ] || return 1
+  major=${version%%.*}
+  remainder=${version#*.}
+  minor=${remainder%%.*}
+  case "$major:$minor" in
+    *[!0-9:]*|:*) return 1 ;;
+  esac
+  [ "$major" -gt "$MIN_GO_MAJOR" ] || {
+    [ "$major" -eq "$MIN_GO_MAJOR" ] && [ "$minor" -ge "$MIN_GO_MINOR" ]
+  }
+}
+
+component_ready() {
+  case "$1" in
+    git) command -v git >/dev/null 2>&1 ;;
+    go) go_version_supported ;;
+    docker) command -v docker >/dev/null 2>&1 ;;
+    compose) command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+component_label() {
+  case "$1" in
+    git) printf '%s' "Git" ;;
+    go) printf 'Go %s.%s+' "$MIN_GO_MAJOR" "$MIN_GO_MINOR" ;;
+    docker) printf '%s' "Docker CLI" ;;
+    compose) printf '%s' "Docker Compose" ;;
+  esac
+}
+
+missing_components() {
+  missing=""
+  for component in "$@"; do
+    if ! component_ready "$component"; then
+      missing="$missing $component"
+    fi
+  done
+  printf '%s\n' "${missing# }"
+}
+
+runtime_report() {
+  for component in "$@"; do
+    label=$(component_label "$component")
+    if component_ready "$component"; then
+      echo "[就绪] $label"
+    else
+      echo "[缺失] $label"
+    fi
+  done
+}
+
+run_privileged() {
+  if [ "$(id -u 2>/dev/null)" = "0" ]; then
+    "$@"
+    return $?
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+    return $?
+  fi
+  echo "错误: 安装系统依赖需要 root 权限或 sudo。" >&2
+  return 1
+}
+
+detect_package_manager() {
+  detected_platform=$1
+  if [ "$detected_platform" = "macOS" ]; then
+    if command -v brew >/dev/null 2>&1; then
+      printf '%s\n' "brew"
+      return 0
+    fi
+    return 1
+  fi
+  for manager in apt-get dnf yum pacman zypper; do
+    if command -v "$manager" >/dev/null 2>&1; then
+      printf '%s\n' "$manager"
+      return 0
+    fi
+  done
+  return 1
+}
+
+prepare_package_manager() {
+  case "$1" in
+    apt-get) run_privileged apt-get update ;;
+    *) return 0 ;;
+  esac
+}
+
+install_component() {
+  manager=$1
+  component=$2
+  case "$manager:$component" in
+    brew:git) brew install git ;;
+    brew:go) brew install go ;;
+    brew:docker|brew:compose) brew install --cask docker ;;
+    apt-get:git) run_privileged apt-get install -y git ;;
+    apt-get:go) run_privileged apt-get install -y golang-go ;;
+    apt-get:docker) run_privileged apt-get install -y docker.io ;;
+    apt-get:compose)
+      run_privileged apt-get install -y docker-compose-v2 ||
+        run_privileged apt-get install -y docker-compose-plugin
+      ;;
+    dnf:git|yum:git) run_privileged "$manager" install -y git ;;
+    dnf:go|yum:go) run_privileged "$manager" install -y golang ;;
+    dnf:docker|yum:docker) run_privileged "$manager" install -y docker ;;
+    dnf:compose|yum:compose) run_privileged "$manager" install -y docker-compose-plugin ;;
+    pacman:git) run_privileged pacman -Sy --needed --noconfirm git ;;
+    pacman:go) run_privileged pacman -Sy --needed --noconfirm go ;;
+    pacman:docker) run_privileged pacman -Sy --needed --noconfirm docker ;;
+    pacman:compose) run_privileged pacman -Sy --needed --noconfirm docker-compose ;;
+    zypper:git) run_privileged zypper --non-interactive install git ;;
+    zypper:go) run_privileged zypper --non-interactive install go ;;
+    zypper:docker) run_privileged zypper --non-interactive install docker ;;
+    zypper:compose) run_privileged zypper --non-interactive install docker-compose ;;
+    *) return 1 ;;
+  esac
+}
+
+try_start_docker() {
+  command -v docker >/dev/null 2>&1 || return 0
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+  detected_platform=$1
+  if [ "$detected_platform" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
+    echo "正在启动 Docker 服务..."
+    run_privileged systemctl enable --now docker >/dev/null 2>&1 || true
+  elif [ "$detected_platform" = "macOS" ] && command -v open >/dev/null 2>&1; then
+    echo "正在启动 Docker Desktop..."
+    open -gja Docker >/dev/null 2>&1 || true
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "提示: Docker CLI 已安装，但 Docker daemon 尚未运行；启动 Docker 后再执行扫描。"
+  fi
+}
+
+report_docker_daemon() {
+  command -v docker >/dev/null 2>&1 || return 0
+  if ! docker info >/dev/null 2>&1; then
+    echo "提示: Docker daemon 尚未运行；启动 Docker 后再执行扫描。"
+  fi
+}
+
+validate_github_settings() {
+  case "$GITHUB_REPOSITORY" in
+    https://github.com/*.git) ;;
+    *) fail "GitHub 仓库必须是 https://github.com/...git 地址" ;;
+  esac
+  case "$GITHUB_REF" in
+    ''|-*|*..*|*[!A-Za-z0-9._/-]*) fail "无效的 GitHub 分支或标签: $GITHUB_REF" ;;
+  esac
+}
+
+ensure_runtime() {
+  case "$AUTO_INSTALL" in
+    0|1) ;;
+    *) fail "DOCKERTREE_AUTO_INSTALL 必须是 0 或 1" ;;
+  esac
+  detected_platform=$(platform_name)
+  arch=$(uname -m 2>/dev/null || printf '%s' "unknown")
+  if [ "$detected_platform" = "unsupported" ]; then
+    fail "不支持的操作系统: $(uname -s 2>/dev/null || printf '%s' "unknown")"
+  fi
+  echo "检测到 $detected_platform ($arch)。"
+  missing=$(missing_components "$@")
+  if [ -z "$missing" ]; then
+    runtime_report "$@"
+    echo "运行环境已就绪。"
+    try_start_docker "$detected_platform"
+    return 0
+  fi
+
+  runtime_report "$@"
+  if [ "$AUTO_INSTALL" = "0" ]; then
+    fail "运行环境不完整，自动安装已关闭"
+  fi
+  manager=$(detect_package_manager "$detected_platform") || {
+    if [ "$detected_platform" = "macOS" ]; then
+      fail "未找到 Homebrew，无法自动补全运行环境；请先安装 Homebrew"
+    fi
+    fail "未找到受支持的包管理器，无法自动补全运行环境"
+  }
+  echo "正在自动补全运行环境（${manager}）..."
+  prepare_package_manager "$manager" || fail "更新软件包索引失败"
+  for component in $missing; do
+    if component_ready "$component"; then
+      continue
+    fi
+    label=$(component_label "$component")
+    echo "正在安装 ${label}..."
+    install_component "$manager" "$component" || fail "安装 $label 失败"
+  done
+  remaining=$(missing_components "$@")
+  if [ -n "$remaining" ]; then
+    runtime_report "$@"
+    fail "自动安装完成后运行环境仍不完整: $remaining"
+  fi
+  runtime_report "$@"
+  echo "运行环境已就绪。"
+  try_start_docker "$detected_platform"
+}
+
+doctor_app() {
+  detected_platform=$(platform_name)
+  arch=$(uname -m 2>/dev/null || printf '%s' "unknown")
+  if [ "$detected_platform" = "unsupported" ]; then
+    echo "不支持的操作系统: $(uname -s 2>/dev/null || printf '%s' "unknown")" >&2
+    return 1
+  fi
+  echo "检测到 $detected_platform ($arch)。"
+  runtime_report git go docker compose
+  missing=$(missing_components git go docker compose)
+  if [ -n "$missing" ]; then
+    echo "运行环境不完整: $missing" >&2
+    return 1
+  fi
+  echo "运行环境已就绪。"
+  report_docker_daemon
 }
 
 validate_timeout() {
@@ -100,21 +344,37 @@ running_pid() {
 }
 
 install_app() {
-  require_command go
-  if [ ! -f "$SOURCE_DIR/go.mod" ] || [ ! -d "$SOURCE_DIR/cmd/dockertree" ]; then
-    fail "找不到 Dockertree 源码目录: $SOURCE_DIR"
+  ensure_runtime git go docker compose
+  mkdir -p "$INSTALL_DIR" "$STATE_DIR" || fail "无法创建安装目录"
+  install_source=$SOURCE_DIR
+  install_checkout=""
+  if [ ! -f "$install_source/go.mod" ] || [ ! -d "$install_source/cmd/dockertree" ]; then
+    validate_github_settings
+    install_checkout=$(mktemp -d "$STATE_DIR/dockertree-install-XXXXXX") || fail "无法创建安装临时目录"
+    install_source=$install_checkout/source
+    echo "正在从 GitHub 获取 Dockertree ($GITHUB_REF)..."
+    if ! git clone --depth 1 --branch "$GITHUB_REF" --single-branch "$GITHUB_REPOSITORY" "$install_source"; then
+      rm -rf "$install_checkout"
+      fail "从 GitHub 获取安装源码失败"
+    fi
+    if [ ! -f "$install_source/go.mod" ] || [ ! -d "$install_source/cmd/dockertree" ]; then
+      rm -rf "$install_checkout"
+      fail "GitHub 安装内容不是有效的 Dockertree 源码"
+    fi
   fi
 
-  mkdir -p "$INSTALL_DIR" "$STATE_DIR" || fail "无法创建安装目录"
   build_tmp=$INSTALL_DIR/.dockertree-build-$$
-  trap 'rm -f "$build_tmp"' EXIT HUP INT TERM
+  trap 'rm -f "$build_tmp"; if [ -n "$install_checkout" ]; then rm -rf "$install_checkout"; fi' EXIT HUP INT TERM
 
   echo "正在编译 Dockertree..."
-  if ! (cd "$SOURCE_DIR" && go build -trimpath -ldflags "-s -w" -o "$build_tmp" ./cmd/dockertree); then
+  if ! (cd "$install_source" && go build -trimpath -ldflags "-s -w" -o "$build_tmp" ./cmd/dockertree); then
     fail "编译失败"
   fi
   chmod 755 "$build_tmp" || fail "无法设置程序权限"
   mv -f "$build_tmp" "$BINARY" || fail "无法安装程序到 $BINARY"
+  if [ -n "$install_checkout" ]; then
+    rm -rf "$install_checkout"
+  fi
 
   trap - EXIT HUP INT TERM
   echo "安装完成: $BINARY"
@@ -122,18 +382,11 @@ install_app() {
 }
 
 update_app() {
-  require_command git
-  require_command go
+  ensure_runtime git go docker compose
   if [ ! -x "$BINARY" ]; then
     fail "尚未安装，请先运行 '$0 install'"
   fi
-  case "$GITHUB_REPOSITORY" in
-    https://github.com/*.git) ;;
-    *) fail "GitHub 仓库必须是 https://github.com/...git 地址" ;;
-  esac
-  case "$GITHUB_REF" in
-    ''|-*|*..*|*[!A-Za-z0-9._/-]*) fail "无效的 GitHub 分支或标签: $GITHUB_REF" ;;
-  esac
+  validate_github_settings
 
   mkdir -p "$INSTALL_DIR" "$STATE_DIR" || fail "无法创建更新目录"
   update_dir=$(mktemp -d "$STATE_DIR/dockertree-update-XXXXXX") || fail "无法创建更新临时目录"
@@ -201,6 +454,7 @@ update_app() {
 }
 
 start_app() {
+  ensure_runtime docker compose
   validate_timeout DOCKERTREE_START_TIMEOUT "$START_TIMEOUT"
   if pid=$(running_pid); then
     echo "Dockertree 已在运行，PID: $pid"
@@ -334,6 +588,14 @@ uninstall_app() {
 
 command=${1:-}
 case "$command" in
+  doctor)
+    if [ "$#" -ne 1 ]; then
+      echo "错误: doctor 不接受选项。" >&2
+      usage >&2
+      exit 2
+    fi
+    doctor_app
+    ;;
   install)
     if [ "$#" -ne 1 ]; then
       echo "错误: install 不接受选项。" >&2
