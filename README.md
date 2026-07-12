@@ -54,13 +54,13 @@ chmod 755 dockertree.sh
 
 可通过 `DOCKERTREE_INSTALL_DIR`、`DOCKERTREE_STATE_DIR` 或 `DOCKERTREE_CONFIG_DIR` 覆盖这些路径。
 
-环境自动补全支持 macOS Homebrew，以及 Linux 的 APT、DNF、YUM、Pacman 和 Zypper。macOS 未安装 Homebrew 时，脚本会停止并提示先安装 Homebrew；Linux 安装系统软件时可能要求输入 `sudo` 密码。Docker 安装完成后，脚本会尝试启动 Docker Desktop 或 Docker 服务；如果 daemon 尚未就绪，Dockertree 仍会完成安装并给出提示。
+环境自动补全支持 macOS Homebrew，以及 Linux 的 APT、DNF、YUM、Pacman 和 Zypper。macOS 未安装 Homebrew 时，脚本会停止并提示先安装 Homebrew；Linux 安装系统软件时可能要求输入 `sudo` 密码。Docker 安装完成后，脚本会尝试启动 Docker Desktop 或 Docker 服务；如果 daemon 尚未就绪，Dockertree 仍会完成安装并给出提示。`start` 会要求 `docker info` 成功，避免启动一个无法管理 Docker 的实例；Linux 用户还需确保当前账号具有 Docker socket 访问权限。
 
 `doctor` 只检查环境，不安装软件或启动 Docker。设置 `DOCKERTREE_AUTO_INSTALL=0` 可以关闭 `install`、`update` 和 `start` 的自动环境补全。
 
 `./dockertree.sh install` 和 `./dockertree.sh update` 都会直接从 GitHub 仓库 `https://github.com/ZASENJC/dockertree.git` 获取源码，在临时目录完成构建，并同步刷新 `dockertree.sh` 自身。源码临时目录会在操作结束后删除。更新不会覆盖配置；如果 Dockertree 原本正在运行，更新成功后会自动重启。GitHub 获取或编译失败时会保留当前二进制和运行中的进程。更新来源可通过 `DOCKERTREE_GITHUB_REPOSITORY` 和 `DOCKERTREE_GITHUB_REF` 覆盖。
 
-`./dockertree.sh uninstall` 会删除已安装程序和运行状态，但保留这个管理脚本；使用 `--purge --yes` 时还会删除 Dockertree 配置。之后仍可使用同一个 `dockertree.sh install` 重新安装。
+`./dockertree.sh uninstall` 会删除已安装程序和运行状态，但保留这个管理脚本；使用 `--purge --yes` 时还会删除 Dockertree 配置。如果配置目录包含管理脚本，清理会被拒绝，避免删除唯一的 `dockertree.sh`。之后仍可使用同一个 `dockertree.sh install` 重新安装。
 
 ## 运行
 
