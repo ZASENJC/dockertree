@@ -159,11 +159,93 @@ func TestManagerRejectsUnknownCommands(t *testing.T) {
 	if result.exitCode != 2 {
 		t.Fatalf("unknown command code = %d, want 2; output=%s", result.exitCode, result.output)
 	}
-	for _, command := range []string{"install", "start", "stop", "restart", "status", "uninstall"} {
+	for _, command := range []string{"install", "update", "start", "stop", "restart", "status", "uninstall"} {
 		if !strings.Contains(result.output, command) {
 			t.Fatalf("help output does not mention %q: %s", command, result.output)
 		}
 	}
+}
+
+func TestManagerUpdateInstallsFromGitHubAndRestartsRunningApp(t *testing.T) {
+	h := newHarness(t)
+	configureFakeGit(t, h)
+	if result := h.run(t, "install"); result.exitCode != 0 {
+		t.Fatalf("install failed: %s", result.output)
+	}
+	if result := h.run(t, "start"); result.exitCode != 0 {
+		t.Fatalf("start failed: %s", result.output)
+	}
+	oldPID := readTrimmed(t, filepath.Join(h.stateDir, "dockertree.pid"))
+
+	result := h.run(t, "update")
+	if result.exitCode != 0 {
+		t.Fatalf("update failed: %s", result.output)
+	}
+	gitLog := readTrimmed(t, filepath.Join(h.home, "git.log"))
+	for _, want := range []string{"clone", "--depth 1", "--branch main", "--single-branch", "https://github.com/ZASENJC/dockertree.git"} {
+		if !strings.Contains(gitLog, want) {
+			t.Fatalf("GitHub update command missing %q: %s", want, gitLog)
+		}
+	}
+	newPID := readTrimmed(t, filepath.Join(h.stateDir, "dockertree.pid"))
+	if newPID == "" || newPID == oldPID {
+		t.Fatalf("update should restart the running app: old=%q new=%q output=%s", oldPID, newPID, result.output)
+	}
+	waitForFileContent(t, h.record, h.configDir)
+	if !strings.Contains(result.output, "GitHub") || !strings.Contains(result.output, "更新完成") {
+		t.Fatalf("update output should identify the GitHub source and completion: %s", result.output)
+	}
+}
+
+func TestManagerUpdateBuildFailureKeepsInstalledBinaryAndProcess(t *testing.T) {
+	h := newHarness(t)
+	configureFakeGit(t, h)
+	if result := h.run(t, "install"); result.exitCode != 0 {
+		t.Fatalf("install failed: %s", result.output)
+	}
+	if result := h.run(t, "start"); result.exitCode != 0 {
+		t.Fatalf("start failed: %s", result.output)
+	}
+	binaryPath := filepath.Join(h.installDir, "dockertree")
+	before, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPID := readTrimmed(t, filepath.Join(h.stateDir, "dockertree.pid"))
+	h.env = append(h.env, "FAKE_GO_FAIL_UPDATE=1")
+
+	result := h.run(t, "update")
+	if result.exitCode == 0 || !strings.Contains(result.output, "编译失败") {
+		t.Fatalf("failed GitHub build should fail update: code=%d output=%s", result.exitCode, result.output)
+	}
+	after, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("failed update replaced the installed binary")
+	}
+	if got := readTrimmed(t, filepath.Join(h.stateDir, "dockertree.pid")); got != oldPID {
+		t.Fatalf("failed update changed the running process: old=%s new=%s", oldPID, got)
+	}
+}
+
+func configureFakeGit(t *testing.T, h *harness) {
+	t.Helper()
+	fakeGit := filepath.Join(h.home, "fake-bin", "git")
+	fakeGitBody := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "${FAKE_GIT_LOG:?}"
+target=""
+for arg in "$@"; do
+  target="$arg"
+done
+mkdir -p "$target/cmd/dockertree"
+printf 'module dockertree\n\ngo 1.23\n' > "$target/go.mod"
+printf 'package main\nfunc main() {}\n' > "$target/cmd/dockertree/main.go"
+`
+	writeExecutable(t, fakeGit, fakeGitBody)
+	h.env = append(h.env, "FAKE_GIT_LOG="+filepath.Join(h.home, "git.log"))
 }
 
 func newHarness(t *testing.T) *harness {
@@ -195,9 +277,17 @@ done
 	writeExecutable(t, template, templateBody)
 
 	fakeGo := filepath.Join(fakeBin, "go")
-	fakeGoBody := `#!/bin/sh
+fakeGoBody := `#!/bin/sh
 set -eu
 printf '%s|%s\n' "$PWD" "$*" >> "${FAKE_GO_LOG:?}"
+case "$PWD" in
+  *dockertree-update-*/source)
+    if [ "${FAKE_GO_FAIL_UPDATE:-0}" = "1" ]; then
+      echo "fake update build failure" >&2
+      exit 31
+    fi
+    ;;
+esac
 output=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-o" ]; then
