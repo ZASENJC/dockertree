@@ -4,6 +4,8 @@ set -u
 
 SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 SOURCE_DIR=${DOCKERTREE_SOURCE_DIR:-$SCRIPT_DIR}
+GITHUB_REPOSITORY=${DOCKERTREE_GITHUB_REPOSITORY:-https://github.com/ZASENJC/dockertree.git}
+GITHUB_REF=${DOCKERTREE_GITHUB_REF:-main}
 
 if [ -z "${HOME:-}" ]; then
   echo "错误: HOME 环境变量未设置。" >&2
@@ -25,6 +27,7 @@ usage() {
 
 命令:
   install                 编译并安装 Dockertree
+  update                  从 GitHub 更新 Dockertree
   start                   后台启动 Dockertree
   stop                    停止 Dockertree
   restart                 重启 Dockertree
@@ -116,6 +119,85 @@ install_app() {
   trap - EXIT HUP INT TERM
   echo "安装完成: $BINARY"
   echo "运行 '$0 start' 启动服务。"
+}
+
+update_app() {
+  require_command git
+  require_command go
+  if [ ! -x "$BINARY" ]; then
+    fail "尚未安装，请先运行 '$0 install'"
+  fi
+  case "$GITHUB_REPOSITORY" in
+    https://github.com/*.git) ;;
+    *) fail "GitHub 仓库必须是 https://github.com/...git 地址" ;;
+  esac
+  case "$GITHUB_REF" in
+    ''|-*|*..*|*[!A-Za-z0-9._/-]*) fail "无效的 GitHub 分支或标签: $GITHUB_REF" ;;
+  esac
+
+  mkdir -p "$INSTALL_DIR" "$STATE_DIR" || fail "无法创建更新目录"
+  update_dir=$(mktemp -d "$STATE_DIR/dockertree-update-XXXXXX") || fail "无法创建更新临时目录"
+  update_source=$update_dir/source
+  update_candidate=$update_dir/dockertree
+  install_tmp=$INSTALL_DIR/.dockertree-update-$$
+  previous_binary=$INSTALL_DIR/.dockertree-previous-$$
+  trap 'rm -rf "$update_dir"; rm -f "$install_tmp"' EXIT HUP INT TERM
+
+  echo "正在从 GitHub 获取 Dockertree ($GITHUB_REF)..."
+  if ! git clone --depth 1 --branch "$GITHUB_REF" --single-branch "$GITHUB_REPOSITORY" "$update_source"; then
+    fail "从 GitHub 获取更新失败"
+  fi
+  if [ ! -f "$update_source/go.mod" ] || [ ! -d "$update_source/cmd/dockertree" ]; then
+    fail "GitHub 更新内容不是有效的 Dockertree 源码"
+  fi
+
+  echo "正在编译 GitHub 更新..."
+  if ! (cd "$update_source" && go build -trimpath -ldflags "-s -w" -o "$update_candidate" ./cmd/dockertree); then
+    fail "编译失败，已保留当前版本"
+  fi
+  chmod 755 "$update_candidate" || fail "无法设置更新程序权限"
+  cp "$update_candidate" "$install_tmp" || fail "无法暂存更新程序"
+  chmod 755 "$install_tmp" || fail "无法设置更新程序权限"
+
+  was_running=false
+  if running_pid >/dev/null; then
+    was_running=true
+    stop_app || return $?
+  fi
+
+  if ! mv "$BINARY" "$previous_binary"; then
+    if [ "$was_running" = true ]; then
+      start_app || true
+    fi
+    fail "无法备份当前程序"
+  fi
+  if ! mv "$install_tmp" "$BINARY"; then
+    mv "$previous_binary" "$BINARY" 2>/dev/null || true
+    if [ "$was_running" = true ]; then
+      start_app || true
+    fi
+    fail "无法安装 GitHub 更新"
+  fi
+
+  if [ "$was_running" = true ] && ! start_app; then
+    echo "新版启动失败，正在回滚当前版本。" >&2
+    rm -f "$BINARY"
+    if ! mv "$previous_binary" "$BINARY"; then
+      fail "回滚失败，旧程序保留在 $previous_binary"
+    fi
+    if ! start_app; then
+      echo "错误: 已恢复旧程序，但服务启动失败，请检查日志: $LOG_FILE" >&2
+    fi
+    return 1
+  fi
+
+  rm -f "$previous_binary"
+  rm -rf "$update_dir"
+  trap - EXIT HUP INT TERM
+  echo "Dockertree GitHub 更新完成。"
+  if [ "$was_running" != true ]; then
+    echo "服务当前未运行，可执行 '$0 start' 启动。"
+  fi
 }
 
 start_app() {
@@ -259,6 +341,14 @@ case "$command" in
       exit 2
     fi
     install_app
+    ;;
+  update)
+    if [ "$#" -ne 1 ]; then
+      echo "错误: update 不接受选项。" >&2
+      usage >&2
+      exit 2
+    fi
+    update_app
     ;;
   start)
     if [ "$#" -ne 1 ]; then
