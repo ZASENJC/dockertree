@@ -549,7 +549,6 @@ After=docker.service
 [Service]
 Type=oneshot
 User=$service_user
-WorkingDirectory="$home_value"
 Environment="HOME=$home_value"
 Environment="DOCKERTREE_INSTALL_DIR=$install_value"
 Environment="DOCKERTREE_STATE_DIR=$state_value"
