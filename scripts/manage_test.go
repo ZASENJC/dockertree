@@ -13,6 +13,7 @@ import (
 
 type harness struct {
 	home       string
+	manager    string
 	installDir string
 	stateDir   string
 	configDir  string
@@ -232,6 +233,58 @@ func TestManagerInstallFetchesGitHubSourceOutsideCheckout(t *testing.T) {
 	}
 }
 
+func TestStandaloneManagerRefreshesItselfFromGitHub(t *testing.T) {
+	h := newHarness(t)
+	configureFakeGit(t, h)
+	managerDir := filepath.Join(h.home, "manager")
+	if err := os.MkdirAll(managerDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	managerData, err := os.ReadFile(managerPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.manager = filepath.Join(managerDir, "dockertree.sh")
+	writeExecutable(t, h.manager, string(managerData))
+	managerTemplate := filepath.Join(h.home, "github-dockertree.sh")
+	writeExecutable(t, managerTemplate, string(managerData)+"\n# refreshed-manager\n")
+	h.env = append(h.env, "FAKE_MANAGER_TEMPLATE="+managerTemplate)
+
+	result := h.run(t, "install")
+	if result.exitCode != 0 {
+		t.Fatalf("standalone install failed: %s", result.output)
+	}
+	refreshed, err := os.ReadFile(h.manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(refreshed), "# refreshed-manager") {
+		t.Fatalf("standalone manager did not refresh itself from GitHub: %s", result.output)
+	}
+	if result := h.run(t, "uninstall"); result.exitCode != 0 {
+		t.Fatalf("standalone uninstall failed: %s", result.output)
+	}
+	assertExecutable(t, h.manager)
+}
+
+func TestReadmeDocumentsSingleScriptBootstrap(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(projectRoot(t), "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme := string(data)
+	for _, want := range []string{"-o dockertree.sh", "./dockertree.sh install", "./dockertree.sh update", "./dockertree.sh uninstall"} {
+		if !strings.Contains(readme, want) {
+			t.Fatalf("single-script documentation missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"git clone https://github.com/ZASENJC/dockertree.git", "dockertreectl"} {
+		if strings.Contains(readme, forbidden) {
+			t.Fatalf("single-script documentation should not require %q", forbidden)
+		}
+	}
+}
+
 func TestManagerCanDisableAutomaticRuntimeProvisioning(t *testing.T) {
 	h := newMissingLinuxRuntimeHarness(t)
 	h.env = append(h.env, "DOCKERTREE_AUTO_INSTALL=0")
@@ -325,6 +378,10 @@ done
 mkdir -p "$target/cmd/dockertree"
 printf 'module dockertree\n\ngo 1.23\n' > "$target/go.mod"
 printf 'package main\nfunc main() {}\n' > "$target/cmd/dockertree/main.go"
+if [ -n "${FAKE_MANAGER_TEMPLATE:-}" ]; then
+  cp "$FAKE_MANAGER_TEMPLATE" "$target/dockertree.sh"
+  chmod 755 "$target/dockertree.sh"
+fi
 `
 	writeExecutable(t, fakeGit, fakeGitBody)
 	h.env = append(h.env, "FAKE_GIT_LOG="+filepath.Join(h.home, "git.log"))
@@ -522,7 +579,11 @@ type commandResult struct {
 
 func (h *harness) run(t *testing.T, args ...string) commandResult {
 	t.Helper()
-	cmd := exec.Command(managerPath(t), args...)
+	manager := h.manager
+	if manager == "" {
+		manager = managerPath(t)
+	}
+	cmd := exec.Command(manager, args...)
 	cmd.Dir = h.home
 	cmd.Env = append(os.Environ(), h.env...)
 	output, err := cmd.CombinedOutput()
