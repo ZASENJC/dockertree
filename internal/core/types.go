@@ -89,13 +89,21 @@ type OperationRecord struct {
 }
 
 type UpdateCheck struct {
-	ProjectID   string    `json:"projectId"`
-	ProjectName string    `json:"projectName"`
-	Status      string    `json:"status"`
-	CheckedAt   time.Time `json:"checkedAt"`
-	Command     string    `json:"command"`
-	Output      string    `json:"output,omitempty"`
-	Error       string    `json:"error,omitempty"`
+	ProjectID   string          `json:"projectId"`
+	ProjectName string          `json:"projectName"`
+	Status      string          `json:"status"`
+	CheckedAt   time.Time       `json:"checkedAt"`
+	Command     string          `json:"command"`
+	Output      string          `json:"output,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	Versions    []UpdateVersion `json:"versions,omitempty"`
+}
+
+type UpdateVersion struct {
+	Service   string `json:"service"`
+	Image     string `json:"image"`
+	Current   string `json:"current"`
+	Available string `json:"available"`
 }
 
 type CleanupCandidate struct {

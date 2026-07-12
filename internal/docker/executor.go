@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -265,6 +266,35 @@ func UpdateCommands(project core.Project, requiresBuild bool, removeOrphans bool
 	return commands
 }
 
+func ServiceUpdateCheckCommand(project core.Project, service string) Command {
+	args := composeArgs(project.ConfigFiles)
+	args = append(args, "--dry-run", "pull", strings.TrimSpace(service))
+	return Command{Name: "docker", Args: args, Dir: project.WorkingDir}
+}
+
+func RemoteImageDigestCommand(image string) Command {
+	return Command{
+		Name: "docker",
+		Args: []string{"buildx", "imagetools", "inspect", "--format", "{{json .Manifest.Digest}}", strings.TrimSpace(image)},
+	}
+}
+
+func ServiceUpdateCommands(project core.Project, service string, requiresBuild bool) []Command {
+	service = strings.TrimSpace(service)
+	if project.Type != core.ProjectTypeCompose || len(project.ConfigFiles) == 0 || service == "" {
+		return nil
+	}
+	base := composeArgs(project.ConfigFiles)
+	commands := []Command{{Name: "docker", Args: append(append([]string{}, base...), "pull", service), Dir: project.WorkingDir}}
+	if requiresBuild {
+		commands = append(commands, Command{Name: "docker", Args: append(append([]string{}, base...), "build", service), Dir: project.WorkingDir})
+	}
+	commands = append(commands, Command{
+		Name: "docker", Args: append(append([]string{}, base...), "up", "-d", "--no-deps", service), Dir: project.WorkingDir,
+	})
+	return commands
+}
+
 func ComposeConfigCommand(project core.Project) Command {
 	args := composeArgs(project.ConfigFiles)
 	args = append(args, "config", "--format", "json")
@@ -284,21 +314,50 @@ func ComposeUpCommand(project core.Project) Command {
 }
 
 func ComposeConfigRequiresBuild(output string) (bool, error) {
-	var config struct {
-		Services map[string]struct {
-			Build json.RawMessage `json:"build"`
-		} `json:"services"`
-	}
-	if err := json.Unmarshal([]byte(output), &config); err != nil {
+	config, err := parseComposeBuildConfig(output)
+	if err != nil {
 		return false, err
 	}
 	for _, service := range config.Services {
-		build := strings.TrimSpace(string(service.Build))
-		if build != "" && build != "null" {
+		if composeServiceHasBuild(service) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func ComposeServiceRequiresBuild(output, serviceName string) (bool, error) {
+	config, err := parseComposeBuildConfig(output)
+	if err != nil {
+		return false, err
+	}
+	serviceName = strings.TrimSpace(serviceName)
+	service, ok := config.Services[serviceName]
+	if !ok {
+		return false, fmt.Errorf("compose service %q was not found", serviceName)
+	}
+	return composeServiceHasBuild(service), nil
+}
+
+type composeBuildConfig struct {
+	Services map[string]composeBuildService `json:"services"`
+}
+
+type composeBuildService struct {
+	Build json.RawMessage `json:"build"`
+}
+
+func parseComposeBuildConfig(output string) (composeBuildConfig, error) {
+	var config composeBuildConfig
+	if err := json.Unmarshal([]byte(output), &config); err != nil {
+		return composeBuildConfig{}, err
+	}
+	return config, nil
+}
+
+func composeServiceHasBuild(service composeBuildService) bool {
+	build := strings.TrimSpace(string(service.Build))
+	return build != "" && build != "null"
 }
 
 func LifecycleCommand(project core.Project, action string) Command {

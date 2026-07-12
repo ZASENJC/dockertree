@@ -679,6 +679,34 @@ details label {
   font-size: 12px;
 }
 
+.compose-editor-dialog {
+  width: min(960px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.compose-editor-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.58);
+}
+
+.compose-editor-dialog-body {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.compose-editor-dialog-body h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.compose-editor-dialog textarea {
+  min-height: min(56vh, 620px);
+}
+
 .inspect-panel {
   display: grid;
 }
@@ -815,10 +843,37 @@ details label {
 
 .update-check {
   min-height: 36px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  gap: 12px;
   padding: 6px 10px;
   border: 1px solid var(--line);
+}
+
+.update-check-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.update-check-versions {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.update-check-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.update-check [data-update-result] {
+  margin: 4px 0 0;
+  max-height: 240px;
 }
 
 .update-check.available {

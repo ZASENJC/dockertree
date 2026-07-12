@@ -90,16 +90,69 @@ func (e CLIExecutor) CheckUpdate(ctx context.Context, project core.Project) (cor
 		}
 		return check, err
 	}
-	text := strings.ToLower(result.Output)
-	switch {
-	case strings.Contains(text, "pulling"), strings.Contains(text, "pulled"), strings.Contains(text, "download"):
-		check.Status = "available"
-	case strings.Contains(text, "up to date"), strings.Contains(text, "already exists"), strings.Contains(text, "no resource to pull"):
-		check.Status = "current"
-	default:
-		check.Status = "unknown"
+	check.Status = ClassifyUpdateOutput(result.Output)
+	check.Versions = e.updateVersions(ctx, project)
+	for _, version := range check.Versions {
+		if isDifferentDigest(version.Current, version.Available) {
+			check.Status = "available"
+			break
+		}
 	}
 	return check, nil
+}
+
+func (e CLIExecutor) updateVersions(ctx context.Context, project core.Project) []core.UpdateVersion {
+	versions := make([]core.UpdateVersion, 0, len(project.Services))
+	for _, service := range project.Services {
+		image := strings.TrimSpace(service.Image)
+		if image == "" {
+			continue
+		}
+		current := strings.TrimSpace(service.Labels["com.docker.compose.image"])
+		if current == "" {
+			current = image
+		}
+		available := image
+		if result, err := e.Execute(ctx, RemoteImageDigestCommand(image)); err == nil {
+			if digest := parseRemoteImageDigest(result.Output); digest != "" {
+				available = digest
+			}
+		}
+		versions = append(versions, core.UpdateVersion{
+			Service: service.Name, Image: image, Current: current, Available: available,
+		})
+	}
+	return versions
+}
+
+func parseRemoteImageDigest(output string) string {
+	output = strings.TrimSpace(output)
+	if output == "" || output == "null" {
+		return ""
+	}
+	var digest string
+	if json.Unmarshal([]byte(output), &digest) == nil {
+		return strings.TrimSpace(digest)
+	}
+	return strings.Trim(output, "\"")
+}
+
+func isDifferentDigest(current, available string) bool {
+	current = strings.TrimSpace(current)
+	available = strings.TrimSpace(available)
+	return strings.HasPrefix(current, "sha256:") && strings.HasPrefix(available, "sha256:") && current != available
+}
+
+func ClassifyUpdateOutput(output string) string {
+	text := strings.ToLower(output)
+	switch {
+	case strings.Contains(text, "pulling"), strings.Contains(text, "pulled"), strings.Contains(text, "download"):
+		return "available"
+	case strings.Contains(text, "up to date"), strings.Contains(text, "already exists"), strings.Contains(text, "no resource to pull"):
+		return "current"
+	default:
+		return "unknown"
+	}
 }
 
 func (e CLIExecutor) CleanupPreview(ctx context.Context) (core.CleanupPreview, error) {

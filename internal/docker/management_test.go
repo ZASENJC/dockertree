@@ -57,12 +57,14 @@ func TestCLIExecutorUpdateCheckUsesComposeDryRun(t *testing.T) {
 	}
 
 	runner.outputs[command] = "Image is up to date"
+	runner.outputs[digestCommand] = `"sha256:1111111111111111111111111111111111111111111111111111111111111111"`
 	check, err = (CLIExecutor{Runner: runner}).CheckUpdate(context.Background(), project)
 	if err != nil || check.Status != "current" {
 		t.Fatalf("current check = %#v err=%v", check, err)
 	}
 
 	runner.outputs[command] = "web Already exists\nworker DRY-RUN MODE - worker Pulled"
+	runner.outputs[digestCommand] = `"sha256:2222222222222222222222222222222222222222222222222222222222222222"`
 	check, err = (CLIExecutor{Runner: runner}).CheckUpdate(context.Background(), project)
 	if err != nil || check.Status != "available" {
 		t.Fatalf("mixed update check = %#v err=%v", check, err)

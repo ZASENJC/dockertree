@@ -800,6 +800,8 @@ function renderContainerDetail(item) {
         <button class="secondary" type="button" data-restart>重启</button>
         <button class="secondary" type="button" data-logs>日志</button>
         <button class="secondary" type="button" data-inspect>检查</button>
+        <button class="secondary" type="button" data-check-update>检查更新</button>
+        <button type="button" data-deploy>拉取并重新部署</button>
         <button class="secondary" type="button" data-project>查看项目</button>
         <button class="danger" type="button" data-delete>删除容器</button>
       </div>
@@ -840,8 +842,15 @@ function renderContainerDetail(item) {
   detail.querySelector('[data-restart]').addEventListener('click', () => containerLifecycle(item, 'restart'));
   detail.querySelector('[data-logs]').addEventListener('click', () => containerLogs(item));
   detail.querySelector('[data-inspect]').addEventListener('click', () => containerInspect(item));
+  detail.querySelector('[data-check-update]').addEventListener('click', () => containerCheckUpdate(item));
+  detail.querySelector('[data-deploy]').addEventListener('click', () => containerDeploy(item));
   detail.querySelector('[data-project]').addEventListener('click', () => openContainerProject(item));
   detail.querySelector('[data-delete]').addEventListener('click', () => deleteContainer(item));
+  const composeManaged = item.projectType === 'compose';
+  for (const button of detail.querySelectorAll('[data-check-update], [data-deploy]')) {
+    button.disabled = !composeManaged;
+    if (!composeManaged) button.title = '独立容器无法可靠恢复原始 docker run 参数，请迁移到 Compose 后更新。';
+  }
   initializeLogViewer(detail.querySelector('[data-log-viewer]'), [], () => containerLogs(item));
   return detail;
 }
@@ -914,7 +923,7 @@ function renderProjectDetail(project) {
         <button class="secondary" id="logs">日志</button>
         <button class="secondary" id="checkUpdate">检查更新</button>
         <button class="secondary" id="preview">更新预览</button>
-        <button class="danger" id="deploy">确认部署</button>
+        <button class="danger" id="deploy">重新部署/更新</button>
         <button class="danger" id="deleteProject"></button>
       </div>
     </div>
@@ -932,6 +941,20 @@ function renderProjectDetail(project) {
       <div class="section-heading"><strong>Compose 文件</strong></div>
       <div data-compose-file-list></div>
     </section>
+    <dialog class="compose-editor-dialog" data-compose-editor-dialog aria-labelledby="projectComposeEditorTitle">
+      <div class="compose-editor-dialog-body">
+        <div class="section-heading">
+          <h2 id="projectComposeEditorTitle">编辑 Compose 文件</h2>
+          <button class="secondary" type="button" data-compose-cancel>关闭</button>
+        </div>
+        <p class="path" data-compose-editor-path></p>
+        <label>Compose 内容<textarea data-compose-editor-content spellcheck="false"></textarea></label>
+        <pre class="hidden" data-compose-editor-status></pre>
+        <div class="actions inline-actions">
+          <button type="button" data-compose-save>保存 Compose</button>
+        </div>
+      </div>
+    </dialog>
     <table class="table">
       <thead><tr><th>服务</th><th>镜像</th><th>状态</th><th>健康</th><th>端口</th><th>挂载</th></tr></thead>
       <tbody></tbody>
@@ -984,6 +1007,9 @@ function renderProjectDetail(project) {
     }
     deleteProject(project);
   });
+  const composeDialog = detail.querySelector('[data-compose-editor-dialog]');
+  composeDialog.querySelector('[data-compose-cancel]').addEventListener('click', () => composeDialog.close());
+  composeDialog.querySelector('[data-compose-save]').addEventListener('click', () => saveProjectCompose(project, composeDialog));
   initializeLogViewer(detail.querySelector('[data-log-viewer]'), services, () => logs(project.id));
   return detail;
 }
@@ -1009,22 +1035,52 @@ function renderComposeFiles(container, project) {
 }
 
 async function editComposeFile(project, composePath) {
-  if (!confirmDiscardComposeChanges()) return;
   try {
     const documentData = await api(`/api/projects/${encodeURIComponent(project.id)}/compose?path=${encodeURIComponent(composePath)}`);
-    state.composeEditingPath = documentData.composePath;
-    state.composeEditingProjectId = documentData.projectId;
-    state.composePreview = null;
-    setActiveView('deploy');
-    setDeployMode('compose');
-    document.querySelector('#composeEditorTitle').textContent = `编辑 ${documentData.name}`;
-    document.querySelector('#composeName').value = documentData.name;
-    document.querySelector('#composePath').value = documentData.composePath;
-    document.querySelector('#composeContent').value = documentData.composeContent;
-    document.querySelector('#composeDiff').classList.add('hidden');
-    setComposeEditorClean();
+    const dialog = document.querySelector('.project-detail [data-compose-editor-dialog]');
+    if (!dialog) return;
+    dialog.dataset.projectId = documentData.projectId;
+    dialog.dataset.projectName = documentData.name;
+    dialog.dataset.composePath = documentData.composePath;
+    dialog.querySelector('#projectComposeEditorTitle').textContent = `编辑 ${documentData.name}`;
+    dialog.querySelector('[data-compose-editor-path]').textContent = documentData.composePath;
+    dialog.querySelector('[data-compose-editor-content]').value = documentData.composeContent;
+    dialog.querySelector('[data-compose-editor-status]').classList.add('hidden');
+    dialog.showModal();
   } catch (err) {
     showOperationResult({ error: err.message });
+  }
+}
+
+async function saveProjectCompose(project, dialog) {
+  const saveButton = dialog.querySelector('[data-compose-save]');
+  const status = dialog.querySelector('[data-compose-editor-status]');
+  const payload = {
+    projectId: dialog.dataset.projectId || project.id,
+    name: dialog.dataset.projectName || project.name,
+    composePath: dialog.dataset.composePath,
+    composeContent: dialog.querySelector('[data-compose-editor-content]').value,
+  };
+  saveButton.disabled = true;
+  status.classList.remove('hidden');
+  status.textContent = '正在校验 Compose 文件...';
+  try {
+    const preview = await api('/api/deploy/compose/preview', jsonPost(payload));
+    payload.expectedExistingHash = preview.existingHash || '';
+    const result = await apiResult('/api/deploy/compose/save', jsonPost(payload));
+    if (result.error) {
+      status.textContent = formatDeployResult(result);
+      showOperationResult(result);
+      return;
+    }
+    showOperationResult(result);
+    dialog.close();
+    await loadProjects();
+  } catch (err) {
+    status.textContent = err.message;
+    showOperationResult({ error: err.message });
+  } finally {
+    saveButton.disabled = false;
   }
 }
 
@@ -1281,13 +1337,16 @@ async function preview(id) {
 async function deploy(id) {
   const planEl = currentProjectPlan() || deployOutput;
   if (!confirm('确认执行更新部署命令？')) return;
+  const stopLogRefresh = startProjectLogRefresh(id);
   try {
     const results = await apiResult(`/api/projects/${encodeURIComponent(id)}/actions/deploy`, { method: 'POST' });
     planEl.textContent = formatDeployResult(results);
     showOperationResult(results);
+    await stopLogRefresh();
     await loadProjects();
   } catch (err) {
     planEl.textContent = err.message;
+    await stopLogRefresh();
   }
 }
 
@@ -1316,12 +1375,78 @@ async function containerLifecycle(container, action) {
   }
 }
 
+async function containerCheckUpdate(container) {
+  const id = container.containerId || container.id;
+  const planEl = currentContainerPlan() || deployOutput;
+  planEl.textContent = '正在检查此容器对应服务的远端镜像...';
+  try {
+    const check = await api(`/api/containers/${encodeURIComponent(id)}/actions/check-update`, { method: 'POST' });
+    planEl.textContent = `${container.name}: ${updateStatusLabel(check.status)}\n\n$ ${check.command || '-'}\n${check.output || check.error || ''}`;
+  } catch (err) {
+    planEl.textContent = err.message;
+  }
+}
+
+async function containerDeploy(container) {
+  const id = container.containerId || container.id;
+  if (!confirm(`确认拉取并重新部署容器 ${container.name}？`)) return;
+  const planEl = currentContainerPlan() || deployOutput;
+  const stopLogRefresh = startContainerLogRefresh(container);
+  try {
+    const results = await apiResult(`/api/containers/${encodeURIComponent(id)}/actions/deploy`, { method: 'POST' });
+    planEl.textContent = formatDeployResult(results);
+    showOperationResult(results);
+    await stopLogRefresh();
+    await loadProjects();
+    const refreshed = flattenContainers().find((item) => item.projectId === container.projectId && item.name === container.name);
+    if (refreshed) {
+      state.selectedContainer = refreshed.id;
+      ensureContainerVisible(refreshed.id);
+      renderContainers();
+    }
+  } catch (err) {
+    planEl.textContent = err.message;
+    await stopLogRefresh();
+  }
+}
+
 async function containerLogs(container) {
   const id = container.containerId || container.id;
   const viewer = document.querySelector('.container-detail [data-log-viewer]');
   if (!viewer) return;
   viewer.classList.remove('hidden');
   viewer.querySelector('.logOutput').textContent = '正在读取日志...';
+  try {
+    const text = await apiText(`/api/containers/${encodeURIComponent(id)}/logs?${logQuery(viewer)}`);
+    setLogText(viewer, text);
+  } catch (err) {
+    viewer.querySelector('.logOutput').textContent = err.message;
+  }
+}
+
+function startContainerLogRefresh(container) {
+  const viewer = document.querySelector('.container-detail [data-log-viewer]');
+  if (!viewer) return async () => {};
+  viewer.classList.remove('hidden');
+  let stopped = false;
+  let loading = false;
+  const refresh = async () => {
+    if (stopped || loading) return;
+    loading = true;
+    await refreshContainerLogs(container, viewer);
+    loading = false;
+  };
+  refresh();
+  const timer = setInterval(refresh, 1000);
+  return async () => {
+    stopped = true;
+    clearInterval(timer);
+    await refreshContainerLogs(container, viewer);
+  };
+}
+
+async function refreshContainerLogs(container, viewer) {
+  const id = container.containerId || container.id;
   try {
     const text = await apiText(`/api/containers/${encodeURIComponent(id)}/logs?${logQuery(viewer)}`);
     setLogText(viewer, text);
@@ -1381,6 +1506,32 @@ async function logs(id) {
   if (!viewer) return;
   viewer.classList.remove('hidden');
   viewer.querySelector('.logOutput').textContent = '正在读取日志...';
+  await refreshProjectLogs(id, viewer);
+}
+
+function startProjectLogRefresh(id) {
+  const viewer = document.querySelector('.project-detail [data-log-viewer]');
+  if (!viewer) return async () => {};
+  viewer.classList.remove('hidden');
+  viewer.querySelector('.logOutput').textContent = '正在启动实时日志刷新...';
+  let stopped = false;
+  let loading = false;
+  const refresh = async () => {
+    if (stopped || loading) return;
+    loading = true;
+    await refreshProjectLogs(id, viewer);
+    loading = false;
+  };
+  refresh();
+  const timer = setInterval(refresh, 1000);
+  return async () => {
+    stopped = true;
+    clearInterval(timer);
+    await refreshProjectLogs(id, viewer);
+  };
+}
+
+async function refreshProjectLogs(id, viewer) {
   try {
     const text = await apiText(`/api/projects/${encodeURIComponent(id)}/logs?${logQuery(viewer)}`);
     setLogText(viewer, text);
@@ -1451,11 +1602,73 @@ async function checkAllUpdates() {
     for (const check of checks) {
       const row = document.createElement('div');
       row.className = `update-check ${check.status}`;
-      row.textContent = `${check.projectName}: ${updateStatusLabel(check.status)}${check.error ? ` · ${check.error}` : ''}`;
+      row.innerHTML = `
+        <div class="update-check-main">
+          <strong data-update-title></strong>
+          <div class="update-check-versions" data-update-versions></div>
+          <pre class="hidden" data-update-result></pre>
+        </div>
+        <div class="update-check-actions"></div>
+      `;
+      row.querySelector('[data-update-title]').textContent = `${check.projectName}: ${updateStatusLabel(check.status)}${check.error ? ` · ${check.error}` : ''}`;
+      row.querySelector('[data-update-versions]').textContent = renderUpdateVersions(check);
+      if (check.status === 'available' && !check.error) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.deployUpdate = '';
+        button.textContent = '一键更新并部署';
+        button.addEventListener('click', () => deployCheckedProject(check, row));
+        row.querySelector('.update-check-actions').appendChild(button);
+      }
       output.appendChild(row);
     }
   } catch (err) {
     output.textContent = err.message;
+  }
+}
+
+function renderUpdateVersions(check) {
+  const versions = check.versions || [];
+  if (!versions.length) return '未获取到镜像版本信息';
+  return versions.map((version) => {
+    const current = formatImageVersion(version.image, version.current);
+    let available = formatImageVersion(version.image, version.available);
+    if (check.status === 'available' && current === available) available += '（远端有新镜像）';
+    return `${version.service || version.image}: ${current} → ${available}`;
+  }).join('\n');
+}
+
+function formatImageVersion(image, value) {
+  const version = String(value || '').trim();
+  if (!version) return image || '-';
+  if (!version.startsWith('sha256:')) return version;
+  return `${image || 'image'}@${version.slice(7, 19)}`;
+}
+
+async function deployCheckedProject(check, row) {
+  if (!confirm(`确认更新并重新部署项目 ${check.projectName}？`)) return;
+  const button = row.querySelector('[data-deploy-update]');
+  const resultEl = row.querySelector('[data-update-result]');
+  button.disabled = true;
+  button.textContent = '正在更新...';
+  resultEl.classList.remove('hidden');
+  resultEl.textContent = '正在拉取镜像并重新部署项目...';
+  try {
+    const results = await apiResult(`/api/projects/${encodeURIComponent(check.projectId)}/actions/deploy`, { method: 'POST' });
+    resultEl.textContent = formatDeployResult(results);
+    showOperationResult(results);
+    if (Array.isArray(results) && results.some((result) => result.error)) {
+      button.disabled = false;
+      button.textContent = '重试更新并部署';
+      return;
+    }
+    await loadProjects();
+    await checkAllUpdates();
+  } catch (err) {
+    resultEl.textContent = err.message;
+    showOperationResult({ error: err.message });
+    button.disabled = false;
+    button.textContent = '重试更新并部署';
   }
 }
 

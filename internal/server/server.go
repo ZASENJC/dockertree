@@ -149,6 +149,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/containers/{id}/actions/start", s.auth(s.containerLifecycle("start")))
 	mux.HandleFunc("POST /api/containers/{id}/actions/stop", s.auth(s.containerLifecycle("stop")))
 	mux.HandleFunc("POST /api/containers/{id}/actions/restart", s.auth(s.containerLifecycle("restart")))
+	mux.HandleFunc("POST /api/containers/{id}/actions/check-update", s.auth(s.checkContainerUpdate))
+	mux.HandleFunc("POST /api/containers/{id}/actions/deploy", s.auth(s.deployContainerService))
 	mux.HandleFunc("GET /api/containers/{id}/logs", s.auth(s.containerLogs))
 	mux.HandleFunc("DELETE /api/images", s.auth(s.deleteImage))
 	mux.HandleFunc("POST /api/scan", s.auth(s.scan))
@@ -483,6 +485,96 @@ func (s *Server) containerLifecycle(action string) http.HandlerFunc {
 		}
 		respond(w, result, err)
 	}
+}
+
+func (s *Server) checkContainerUpdate(w http.ResponseWriter, r *http.Request) {
+	project, service, ok, err := s.findContainerTarget(r.PathValue("id"))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if project.Type != core.ProjectTypeCompose || len(project.ConfigFiles) == 0 {
+		badRequest(w, errText("container updates require a Compose-managed service"))
+		return
+	}
+	cmd := docker.ServiceUpdateCheckCommand(project, service.Name)
+	result, execErr := s.exec.Execute(r.Context(), cmd)
+	check := core.UpdateCheck{
+		ProjectID: project.ID, ProjectName: service.Name, CheckedAt: time.Now(), Command: cmd.String(),
+		Output: result.Output, Status: docker.ClassifyUpdateOutput(result.Output),
+	}
+	if execErr != nil {
+		check.Error = result.Error
+		if check.Error == "" {
+			check.Error = execErr.Error()
+		}
+	}
+	respond(w, check, execErr)
+}
+
+func (s *Server) deployContainerService(w http.ResponseWriter, r *http.Request) {
+	containerID := strings.TrimSpace(r.PathValue("id"))
+	project, service, ok, err := s.findContainerTarget(containerID)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if project.Type != core.ProjectTypeCompose || len(project.ConfigFiles) == 0 {
+		badRequest(w, errText("container updates require a Compose-managed service"))
+		return
+	}
+	inspection, inspectErr := s.exec.Execute(r.Context(), docker.ComposeConfigCommand(project))
+	if inspectErr != nil {
+		respond(w, inspection, inspectErr)
+		return
+	}
+	requiresBuild, err := docker.ComposeServiceRequiresBuild(inspection.Output, service.Name)
+	if err != nil {
+		inspection.Error = err.Error()
+		respond(w, inspection, err)
+		return
+	}
+	results := make([]docker.Result, 0, 3)
+	for _, cmd := range docker.ServiceUpdateCommands(project, service.Name, requiresBuild) {
+		result, execErr := s.executeRecorded(r.Context(), cmd, "container", containerID, service.Name, "deploy")
+		results = append(results, result)
+		if execErr != nil {
+			respond(w, results, execErr)
+			return
+		}
+	}
+	if err := s.refreshInventory(r.Context()); err != nil {
+		respond(w, results, err)
+		return
+	}
+	respond(w, results, nil)
+}
+
+func (s *Server) findContainerTarget(id string) (core.Project, core.Service, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return core.Project{}, core.Service{}, false, errors.New("container id is required")
+	}
+	projects, err := s.store.LoadInventory()
+	if err != nil {
+		return core.Project{}, core.Service{}, false, err
+	}
+	for _, project := range projects {
+		for _, service := range project.Services {
+			if service.ContainerID == id || (service.ContainerID == "" && service.Name == id) {
+				return project, service, true, nil
+			}
+		}
+	}
+	return core.Project{}, core.Service{}, false, nil
 }
 
 func (s *Server) containerLogs(w http.ResponseWriter, r *http.Request) {
