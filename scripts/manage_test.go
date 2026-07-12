@@ -167,7 +167,7 @@ func TestManagerInstallAndUninstallManageMacOSLaunchAgent(t *testing.T) {
 	}
 	plistPath := filepath.Join(h.home, "Library", "LaunchAgents", "io.github.zasenjc.dockertree.plist")
 	plist := readTrimmed(t, plistPath)
-	for _, want := range []string{h.managerPath(t), "<string>start</string>", "<key>RunAtLoad</key>"} {
+	for _, want := range []string{h.managerPath(t), "<string>start</string>", "<key>RunAtLoad</key>", "<key>SuccessfulExit</key>", "<integer>10</integer>"} {
 		if !strings.Contains(plist, want) {
 			t.Fatalf("launch agent missing %q: %s", want, plist)
 		}

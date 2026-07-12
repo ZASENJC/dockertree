@@ -20,6 +20,10 @@ CONFIG_DIR=${DOCKERTREE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dockertree
 BINARY=$INSTALL_DIR/dockertree
 PID_FILE=$STATE_DIR/dockertree.pid
 LOG_FILE=$STATE_DIR/dockertree.log
+SYSTEMD_UNIT_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+SYSTEMD_UNIT_FILE=$SYSTEMD_UNIT_DIR/dockertree.service
+LAUNCH_AGENT_DIR=$HOME/Library/LaunchAgents
+LAUNCH_AGENT_FILE=$LAUNCH_AGENT_DIR/io.github.zasenjc.dockertree.plist
 START_TIMEOUT=${DOCKERTREE_START_TIMEOUT:-1}
 STOP_TIMEOUT=${DOCKERTREE_STOP_TIMEOUT:-10}
 AUTO_INSTALL=${DOCKERTREE_AUTO_INSTALL:-1}
@@ -60,6 +64,7 @@ usage() {
 DOCKERTREE_CONFIG_DIR 和 DOCKERTREE_SOURCE_DIR 覆盖默认路径。
 设置 DOCKERTREE_PORT 可在非交互环境中指定并保存监听端口。
 设置 DOCKERTREE_AUTO_INSTALL=0 可关闭缺失环境的自动安装。
+安装或启动会注册设备重启后的自动启动任务。
 EOF
 }
 
@@ -478,6 +483,145 @@ show_access_details() {
   fi
 }
 
+systemd_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/%/%%/g'
+}
+
+xml_escape() {
+  printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&apos;/g'
+}
+
+install_systemd_autostart() {
+  mkdir -p "$SYSTEMD_UNIT_DIR" || return 1
+  manager_value=$(systemd_escape "$SCRIPT_PATH")
+  install_value=$(systemd_escape "$INSTALL_DIR")
+  state_value=$(systemd_escape "$STATE_DIR")
+  config_value=$(systemd_escape "$CONFIG_DIR")
+  path_value=$(systemd_escape "${PATH:-/usr/local/bin:/usr/bin:/bin}")
+  unit_tmp=$SYSTEMD_UNIT_FILE.tmp-$$
+  cat >"$unit_tmp" <<EOF
+[Unit]
+Description=Dockertree local Docker console
+After=docker.service
+
+[Service]
+Type=oneshot
+Environment="DOCKERTREE_INSTALL_DIR=$install_value"
+Environment="DOCKERTREE_STATE_DIR=$state_value"
+Environment="DOCKERTREE_CONFIG_DIR=$config_value"
+Environment="DOCKERTREE_AUTO_INSTALL=0"
+Environment="DOCKERTREE_AUTOSTART_CONTEXT=1"
+Environment="PATH=$path_value"
+ExecStart="$manager_value" start
+ExecStop="$manager_value" stop
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+  chmod 644 "$unit_tmp" || {
+    rm -f "$unit_tmp"
+    return 1
+  }
+  mv -f "$unit_tmp" "$SYSTEMD_UNIT_FILE" || return 1
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "提示: 已写入 systemd 用户服务，但未找到 systemctl，无法立即启用。" >&2
+    return 0
+  fi
+  if ! systemctl --user daemon-reload >/dev/null 2>&1 ||
+    ! systemctl --user enable dockertree.service >/dev/null 2>&1; then
+    echo "提示: 已写入 systemd 用户服务，但当前用户会话无法启用；登录后执行 systemctl --user enable dockertree.service。" >&2
+    return 0
+  fi
+  return 0
+}
+
+install_launchd_autostart() {
+  mkdir -p "$LAUNCH_AGENT_DIR" || return 1
+  manager_value=$(xml_escape "$SCRIPT_PATH")
+  install_value=$(xml_escape "$INSTALL_DIR")
+  state_value=$(xml_escape "$STATE_DIR")
+  config_value=$(xml_escape "$CONFIG_DIR")
+  path_value=$(xml_escape "${PATH:-/usr/local/bin:/usr/bin:/bin}")
+  plist_tmp=$LAUNCH_AGENT_FILE.tmp-$$
+  cat >"$plist_tmp" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.zasenjc.dockertree</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$manager_value</string>
+    <string>start</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DOCKERTREE_INSTALL_DIR</key>
+    <string>$install_value</string>
+    <key>DOCKERTREE_STATE_DIR</key>
+    <string>$state_value</string>
+    <key>DOCKERTREE_CONFIG_DIR</key>
+    <string>$config_value</string>
+    <key>DOCKERTREE_AUTO_INSTALL</key>
+    <string>0</string>
+    <key>DOCKERTREE_AUTOSTART_CONTEXT</key>
+    <string>1</string>
+    <key>PATH</key>
+    <string>$path_value</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+</dict>
+</plist>
+EOF
+  chmod 644 "$plist_tmp" || {
+    rm -f "$plist_tmp"
+    return 1
+  }
+  mv -f "$plist_tmp" "$LAUNCH_AGENT_FILE"
+}
+
+ensure_autostart() {
+  if [ "${DOCKERTREE_AUTOSTART_CONTEXT:-0}" = "1" ]; then
+    return 0
+  fi
+  case "$(platform_name)" in
+    Linux) install_systemd_autostart || fail "无法注册 systemd 自动启动服务" ;;
+    macOS) install_launchd_autostart || fail "无法注册 macOS 自动启动任务" ;;
+    *) return 0 ;;
+  esac
+  echo "已启用设备重启后自动启动。"
+}
+
+remove_autostart() {
+  case "$(platform_name)" in
+    Linux)
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable dockertree.service >/dev/null 2>&1 || true
+      fi
+      rm -f "$SYSTEMD_UNIT_FILE" || return 1
+      if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+      fi
+      ;;
+    macOS)
+      rm -f "$LAUNCH_AGENT_FILE" || return 1
+      ;;
+  esac
+}
+
 install_app() {
   ensure_runtime git go docker compose
   mkdir -p "$INSTALL_DIR" "$STATE_DIR" || fail "无法创建安装目录"
@@ -517,6 +661,7 @@ install_app() {
   else
     prepare_listen_port || return $?
   fi
+  ensure_autostart
 
   trap - EXIT HUP INT TERM
   echo "安装完成: $BINARY"
@@ -601,13 +746,14 @@ update_app() {
 
 start_app() {
   validate_timeout DOCKERTREE_START_TIMEOUT "$START_TIMEOUT"
+  if [ ! -x "$BINARY" ]; then
+    fail "尚未安装，请先运行 '$0 install'"
+  fi
+  ensure_autostart
   if pid=$(running_pid); then
     echo "Dockertree 已在运行，PID: $pid"
     show_access_details 1
     return 0
-  fi
-  if [ ! -x "$BINARY" ]; then
-    fail "尚未安装，请先运行 '$0 install'"
   fi
   prepare_listen_port || return $?
   ensure_runtime docker compose
@@ -724,6 +870,7 @@ uninstall_app() {
   fi
 
   stop_app || return $?
+  remove_autostart || fail "删除自动启动配置失败"
   rm -f "$BINARY" "$PID_FILE" "$LOG_FILE" || fail "卸载文件失败"
   rmdir "$STATE_DIR" 2>/dev/null || true
 
