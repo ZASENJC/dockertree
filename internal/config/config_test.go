@@ -27,11 +27,34 @@ func TestLoadCreatesMigratableDefaults(t *testing.T) {
 	if cfg.Update.RemoveOrphans {
 		t.Fatal("RemoveOrphans should default to false")
 	}
+	if cfg.ProjectRoot != "/opt" {
+		t.Fatalf("ProjectRoot = %q, want /opt", cfg.ProjectRoot)
+	}
+	if len(cfg.ScanPaths) != 1 || cfg.ScanPaths[0] != "/opt" {
+		t.Fatalf("ScanPaths = %#v, want [/opt]", cfg.ScanPaths)
+	}
 	if cfg.Automation.UpdateCheckIntervalMinutes != 0 || cfg.Automation.WebhookType != "generic" || !cfg.Automation.NotifyOnUpdates {
 		t.Fatalf("unexpected automation defaults: %#v", cfg.Automation)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "config.yaml")); err != nil {
 		t.Fatalf("config.yaml was not created: %v", err)
+	}
+}
+
+func TestLoadAppliesProjectDefaultsToLegacyConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DOCKERTREE_CONFIG_DIR", dir)
+	legacy := []byte("listenAddr: 127.0.0.1:27680\nadminToken: token\nallowLan: false\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ProjectRoot != "/opt" || len(cfg.ScanPaths) != 1 || cfg.ScanPaths[0] != "/opt" {
+		t.Fatalf("legacy config project defaults = root %q paths %#v", cfg.ProjectRoot, cfg.ScanPaths)
 	}
 }
 

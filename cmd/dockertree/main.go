@@ -35,7 +35,7 @@ func main() {
 	st := store.New(filepath.Join(cfg.Dir, "inventory.yaml"))
 	operations := store.NewOperationStore(filepath.Join(cfg.Dir, "logs", "operations.jsonl"))
 	templates := store.NewTemplateStore(filepath.Join(cfg.Dir, "templates.yaml"))
-	scanner := dockerd.NewScanner(dockerd.CLIRunner{}, cfg.ScanPaths)
+	scanner := dockerd.NewScanner(dockerd.CLIRunner{}, config.EffectiveScanPaths(cfg))
 	srv := server.New(cfg, st, scanner, dockerd.CLIExecutor{}).WithOperationLog(operations).WithTemplateStore(templates)
 	srv.StartAutomation(context.Background())
 	handler := srv.Handler()

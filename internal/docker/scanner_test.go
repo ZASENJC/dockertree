@@ -39,6 +39,77 @@ func TestScannerIndexesComposeFilesFromConfiguredScanPaths(t *testing.T) {
 	}
 }
 
+func TestScannerSkipsSymlinkedComposeFiles(t *testing.T) {
+	root := t.TempDir()
+	appDir := filepath.Join(root, "myapp")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "compose.yml")
+	if err := os.WriteFile(target, []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(appDir, "compose.yml")); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	runner := fakeRunner{
+		"compose ls --format json":  `[]`,
+		"ps -a --format {{json .}}": ``,
+	}
+
+	projects, err := NewScanner(runner, []string{root}).Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("scanner indexed a symlinked compose file: %#v", projects)
+	}
+}
+
+func TestScannerAppliesUpdatedScanPathsWithoutRestart(t *testing.T) {
+	root := t.TempDir()
+	appDir := filepath.Join(root, "group", "myapp")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composePath := filepath.Join(appDir, "docker-compose.yaml")
+	if err := os.WriteFile(composePath, []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := fakeRunner{
+		"compose ls --format json":  `[]`,
+		"ps -a --format {{json .}}": ``,
+	}
+	scanner := NewScanner(runner, nil)
+	scanner.SetScanPaths([]string{root})
+
+	projects, err := scanner.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+	if len(projects) != 1 || projects[0].Name != "myapp" || projects[0].ConfigFiles[0] != composePath {
+		t.Fatalf("updated paths were not used: %#v", projects)
+	}
+}
+
+func TestScannerCopiesUpdatedScanPaths(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{root}
+	scanner := NewScanner(fakeRunner{
+		"compose ls --format json":  `[]`,
+		"ps -a --format {{json .}}": ``,
+	}, nil)
+	scanner.SetScanPaths(paths)
+	paths[0] = filepath.Join(root, "changed")
+
+	scanner.mu.RLock()
+	got := append([]string(nil), scanner.scanPaths...)
+	scanner.mu.RUnlock()
+	if len(got) != 1 || got[0] != root {
+		t.Fatalf("scanner retained caller slice: %#v", got)
+	}
+}
+
 func TestScannerKeepsSameNamedComposeDirectoriesSeparate(t *testing.T) {
 	root := t.TempDir()
 	firstDir := filepath.Join(root, "first", "app")

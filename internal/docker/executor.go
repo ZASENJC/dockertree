@@ -271,6 +271,18 @@ func ComposeConfigCommand(project core.Project) Command {
 	return Command{Name: "docker", Args: args, Dir: project.WorkingDir}
 }
 
+func ComposeValidateCommand(project core.Project) Command {
+	args := composeArgs(project.ConfigFiles)
+	args = append(args, "config")
+	return Command{Name: "docker", Args: args, Dir: project.WorkingDir}
+}
+
+func ComposeUpCommand(project core.Project) Command {
+	args := composeArgs(project.ConfigFiles)
+	args = append(args, "up", "-d")
+	return Command{Name: "docker", Args: args, Dir: project.WorkingDir}
+}
+
 func ComposeConfigRequiresBuild(output string) (bool, error) {
 	var config struct {
 		Services map[string]struct {

@@ -44,6 +44,7 @@ const defaultUpdateCheckTimeout = 2 * time.Minute
 
 type Server struct {
 	cfgMu               sync.RWMutex
+	configUpdateMu      sync.Mutex
 	cfg                 config.Config
 	store               Inventory
 	scanner             Scanner
@@ -55,6 +56,13 @@ type Server struct {
 	automationMu        sync.Mutex
 	lastAutomationCheck time.Time
 	updateCheckTimeout  time.Duration
+	composeLocksMu      sync.Mutex
+	composeLocks        map[string]*composePathLock
+}
+
+type composePathLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func New(cfg config.Config, store Inventory, scanner Scanner, exec docker.Executor) *Server {
@@ -91,6 +99,37 @@ func (s *Server) setConfig(cfg config.Config) {
 	s.cfgMu.Unlock()
 }
 
+func (s *Server) lockConfigUpdates() func() {
+	s.configUpdateMu.Lock()
+	return s.configUpdateMu.Unlock
+}
+
+func (s *Server) lockComposePath(path string) func() {
+	path = filepath.Clean(path)
+	s.composeLocksMu.Lock()
+	if s.composeLocks == nil {
+		s.composeLocks = make(map[string]*composePathLock)
+	}
+	lock := s.composeLocks[path]
+	if lock == nil {
+		lock = &composePathLock{}
+		s.composeLocks[path] = lock
+	}
+	lock.refs++
+	s.composeLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.composeLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.composeLocks, path)
+		}
+		s.composeLocksMu.Unlock()
+	}
+}
+
 func (s *Server) Handler() http.Handler {
 	if s.exec == nil {
 		s.exec = docker.CLIExecutor{}
@@ -101,6 +140,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /styles.css", s.asset)
 	mux.HandleFunc("GET /api/projects", s.auth(s.projects))
 	mux.HandleFunc("GET /api/projects/{id}", s.auth(s.project))
+	mux.HandleFunc("GET /api/projects/{id}/compose", s.auth(s.projectCompose))
 	mux.HandleFunc("PATCH /api/projects/{id}/metadata", s.auth(s.updateProjectMetadata))
 	mux.HandleFunc("DELETE /api/projects/{id}", s.auth(s.deleteProject))
 	mux.HandleFunc("GET /api/containers/stats", s.auth(s.containerStats))
@@ -124,11 +164,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/deploy/container/preview", s.auth(s.previewContainerDeploy))
 	mux.HandleFunc("POST /api/deploy/container", s.auth(s.deployContainer))
 	mux.HandleFunc("POST /api/deploy/compose/preview", s.auth(s.previewComposeDeploy))
+	mux.HandleFunc("POST /api/deploy/compose/save", s.auth(s.saveCompose))
 	mux.HandleFunc("POST /api/deploy/compose", s.auth(s.deployCompose))
 	mux.HandleFunc("GET /api/operations", s.auth(s.operationHistory))
 	mux.HandleFunc("POST /api/updates/check", s.auth(s.checkAllUpdates))
 	mux.HandleFunc("GET /api/settings/automation", s.auth(s.automationSettings))
 	mux.HandleFunc("PATCH /api/settings/automation", s.auth(s.updateAutomationSettings))
+	mux.HandleFunc("GET /api/settings/projects", s.auth(s.projectSettings))
+	mux.HandleFunc("PATCH /api/settings/projects", s.auth(s.updateProjectSettings))
 	mux.HandleFunc("POST /api/notifications/test", s.auth(s.testNotification))
 	mux.HandleFunc("GET /api/cleanup/preview", s.auth(s.cleanupPreview))
 	mux.HandleFunc("POST /api/cleanup", s.auth(s.cleanup))
@@ -643,11 +686,16 @@ func (s *Server) deployContainer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) previewComposeDeploy(w http.ResponseWriter, r *http.Request) {
-	var req docker.ComposeDeployRequest
-	if !decodeJSON(w, r, &req) {
+	var apiReq composeDeployAPIRequest
+	if !decodeJSON(w, r, &apiReq) {
 		return
 	}
-	plan, err := docker.ComposeDeployPlan(req)
+	req, target, err := s.resolveComposeDeployRequest(apiReq.deployRequest(), apiReq.ProjectID)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	plan, err := composeDeployPlan(req, target)
 	if err != nil {
 		badRequest(w, err)
 		return
@@ -667,7 +715,7 @@ func (s *Server) previewComposeDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	preview := core.ComposeDeployPreview{
-		Plan: plan, NormalizedContent: normalized, ExistingContent: existing,
+		Plan: plan, ComposePath: req.ComposePath, NormalizedContent: normalized, ExistingContent: existing,
 		Overwrites: existingFound && existing != normalized,
 	}
 	preview.ExistingHash = "absent"
@@ -677,12 +725,34 @@ func (s *Server) previewComposeDeploy(w http.ResponseWriter, r *http.Request) {
 	respond(w, preview, nil)
 }
 
-func (s *Server) deployCompose(w http.ResponseWriter, r *http.Request) {
-	var req docker.ComposeDeployRequest
-	if !decodeJSON(w, r, &req) {
+func (s *Server) saveCompose(w http.ResponseWriter, r *http.Request) {
+	var apiReq composeDeployAPIRequest
+	if !decodeJSON(w, r, &apiReq) {
 		return
 	}
-	cmd, err := docker.ValidatedComposeDeployCommand(req)
+	req, target, err := s.resolveComposeDeployRequest(apiReq.deployRequest(), apiReq.ProjectID)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	s.applyCompose(w, r, req, target, false)
+}
+
+func (s *Server) deployCompose(w http.ResponseWriter, r *http.Request) {
+	var apiReq composeDeployAPIRequest
+	if !decodeJSON(w, r, &apiReq) {
+		return
+	}
+	req, target, err := s.resolveComposeDeployRequest(apiReq.deployRequest(), apiReq.ProjectID)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	s.applyCompose(w, r, req, target, true)
+}
+
+func (s *Server) applyCompose(w http.ResponseWriter, r *http.Request, req docker.ComposeDeployRequest, target composeDeployTarget, deploy bool) {
+	cmd, err := composeDeployCommand(req, target)
 	if err != nil {
 		badRequest(w, err)
 		return
@@ -693,6 +763,8 @@ func (s *Server) deployCompose(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
+	unlock := s.lockComposePath(composePath)
+	defer unlock()
 	if req.ExpectedExistingHash != "" {
 		actualHash, hashErr := composeFileHash(composePath)
 		if hashErr != nil {
@@ -705,9 +777,28 @@ func (s *Server) deployCompose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	composeDir := filepath.Dir(composePath)
+	if target.derived {
+		cfg := s.currentConfig()
+		if err := validateDerivedComposePath(cfg.ProjectRoot, composePath); err != nil {
+			badRequest(w, err)
+			return
+		}
+	}
 	if err := os.MkdirAll(composeDir, 0o755); err != nil {
 		respond(w, nil, err)
 		return
+	}
+	if target.derived {
+		cfg := s.currentConfig()
+		if err := validateDerivedComposePath(cfg.ProjectRoot, composePath); err != nil {
+			badRequest(w, err)
+			return
+		}
+	} else if target.project != nil {
+		if _, err := s.validateManagedComposeFile(composePath); err != nil {
+			badRequest(w, err)
+			return
+		}
 	}
 	stagedPath, err := stageComposeFile(composeDir, normalized)
 	if err != nil {
@@ -715,14 +806,22 @@ func (s *Server) deployCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer os.Remove(stagedPath)
-	validationResult, err := s.exec.Execute(r.Context(), docker.Command{
-		Name: "docker",
-		Args: []string{"compose", "-f", stagedPath, "config"},
-		Dir:  composeDir,
-	})
+	validationResult, err := s.exec.Execute(r.Context(), composeValidationCommand(req, target, stagedPath))
 	if err != nil {
 		respond(w, validationResult, err)
 		return
+	}
+	if target.derived {
+		cfg := s.currentConfig()
+		if err := validateDerivedComposePath(cfg.ProjectRoot, composePath); err != nil {
+			badRequest(w, err)
+			return
+		}
+	} else if target.project != nil {
+		if _, err := s.validateManagedComposeFile(composePath); err != nil {
+			badRequest(w, err)
+			return
+		}
 	}
 	restore, discardBackup, err := replaceComposeFile(composePath, stagedPath, req.ExpectedExistingHash)
 	if err != nil {
@@ -733,26 +832,48 @@ func (s *Server) deployCompose(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	projectName := strings.TrimSpace(req.Name)
-	if projectName == "" {
-		projectName = filepath.Base(composeDir)
-	}
-	result, err := s.executeRecorded(r.Context(), cmd, "project", "compose:"+projectName, projectName, "deploy")
-	if err != nil {
-		if restoreErr := restore(); restoreErr != nil {
-			err = errors.Join(err, fmt.Errorf("restore original compose file: %w", restoreErr))
+	if deploy {
+		projectName := strings.TrimSpace(req.Name)
+		if projectName == "" {
+			projectName = filepath.Base(composeDir)
 		}
-		respond(w, result, err)
+		targetID := "compose:" + projectName
+		if target.project != nil {
+			targetID = target.project.ID
+		}
+		result, err := s.executeRecorded(r.Context(), cmd, "project", targetID, projectName, "deploy")
+		if err != nil {
+			if restoreErr := restore(); restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore original compose file: %w", restoreErr))
+			}
+			respond(w, result, err)
+			return
+		}
+		if err := discardBackup(); err != nil {
+			respond(w, result, fmt.Errorf("remove compose backup: %w", err))
+			return
+		}
+		if err := s.refreshInventory(r.Context()); err != nil {
+			respond(w, result, err)
+			return
+		}
+		respond(w, result, nil)
 		return
+	}
+
+	saveResult := composeSaveResponse{
+		Result:      docker.Result{Command: "save " + composePath, Output: "Compose file saved.", ExitCode: 0},
+		ComposePath: composePath, Saved: true, Deployed: false,
 	}
 	if err := discardBackup(); err != nil {
-		respond(w, result, fmt.Errorf("remove compose backup: %w", err))
+		respond(w, saveResult, fmt.Errorf("remove compose backup: %w", err))
 		return
 	}
-	if err == nil {
-		err = s.refreshInventory(r.Context())
+	if err := s.refreshInventory(r.Context()); err != nil {
+		respond(w, saveResult, err)
+		return
 	}
-	respond(w, result, err)
+	respond(w, saveResult, nil)
 }
 
 func stageComposeFile(dir, content string) (string, error) {
@@ -787,6 +908,11 @@ func composeFileHash(path string) (string, error) {
 }
 
 func replaceComposeFile(target, staged, expectedExistingHash string) (restore func() error, discardBackup func() error, err error) {
+	stagedData, err := os.ReadFile(staged)
+	if err != nil {
+		return nil, nil, err
+	}
+	installedHash := docker.ComposeContentHash(string(stagedData))
 	if expectedExistingHash != "" {
 		actualHash, hashErr := composeFileHash(target)
 		if hashErr != nil {
@@ -825,6 +951,16 @@ func replaceComposeFile(target, staged, expectedExistingHash string) (restore fu
 	}
 
 	restore = func() error {
+		actualHash, hashErr := composeFileHash(target)
+		if hashErr != nil {
+			return hashErr
+		}
+		if actualHash != installedHash {
+			if backup != "" {
+				return fmt.Errorf("%w; original backup preserved at %s", errComposeFileChanged, backup)
+			}
+			return fmt.Errorf("%w; current file was preserved", errComposeFileChanged)
+		}
 		if removeErr := os.Remove(target); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			return removeErr
 		}

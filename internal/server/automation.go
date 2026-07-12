@@ -82,6 +82,8 @@ func (s *Server) updateAutomationSettings(w http.ResponseWriter, r *http.Request
 		badRequest(w, err)
 		return
 	}
+	unlock := s.lockConfigUpdates()
+	defer unlock()
 	cfg := s.currentConfig()
 	cfg.Automation = automation
 	if cfg.Dir != "" {

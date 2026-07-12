@@ -15,15 +15,18 @@ import (
 )
 
 type Config struct {
-	ListenAddr string           `json:"listenAddr" yaml:"listenAddr"`
-	AdminToken string           `json:"adminToken" yaml:"adminToken"`
-	AllowLAN   bool             `json:"allowLan" yaml:"allowLan"`
-	ScanPaths  []string         `json:"scanPaths" yaml:"scanPaths"`
-	Update     UpdateConfig     `json:"update" yaml:"update"`
-	Automation AutomationConfig `json:"automation" yaml:"automation"`
-	UI         UIConfig         `json:"ui" yaml:"ui"`
-	Dir        string           `json:"-" yaml:"-"`
+	ListenAddr  string           `json:"listenAddr" yaml:"listenAddr"`
+	AdminToken  string           `json:"adminToken" yaml:"adminToken"`
+	AllowLAN    bool             `json:"allowLan" yaml:"allowLan"`
+	ScanPaths   []string         `json:"scanPaths" yaml:"scanPaths"`
+	ProjectRoot string           `json:"projectRoot" yaml:"projectRoot"`
+	Update      UpdateConfig     `json:"update" yaml:"update"`
+	Automation  AutomationConfig `json:"automation" yaml:"automation"`
+	UI          UIConfig         `json:"ui" yaml:"ui"`
+	Dir         string           `json:"-" yaml:"-"`
 }
+
+const DefaultProjectRoot = "/opt"
 
 type UpdateConfig struct {
 	RemoveOrphans bool `json:"removeOrphans" yaml:"removeOrphans"`
@@ -66,6 +69,12 @@ func Load() (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, err
 	}
+	projectRoot, scanPaths, err := NormalizeProjectPaths(cfg.ProjectRoot, cfg.ScanPaths)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ProjectRoot = projectRoot
+	cfg.ScanPaths = scanPaths
 	cfg.Dir = dir
 	if cfg.AdminToken == "" {
 		cfg.AdminToken = randomToken()
@@ -77,6 +86,12 @@ func Load() (Config, error) {
 }
 
 func Save(cfg Config) error {
+	projectRoot, scanPaths, err := NormalizeProjectPaths(cfg.ProjectRoot, cfg.ScanPaths)
+	if err != nil {
+		return err
+	}
+	cfg.ProjectRoot = projectRoot
+	cfg.ScanPaths = scanPaths
 	if cfg.Dir == "" {
 		dir, err := ConfigDir()
 		if err != nil {
@@ -107,18 +122,22 @@ func ConfigDir() (string, error) {
 
 func defaultConfig(dir string) Config {
 	return Config{
-		ListenAddr: "0.0.0.0:27680",
-		AdminToken: randomToken(),
-		AllowLAN:   true,
-		ScanPaths:  []string{},
-		Update:     UpdateConfig{RemoveOrphans: false},
-		Automation: AutomationConfig{WebhookType: "generic", NotifyOnUpdates: true},
-		UI:         UIConfig{Theme: "minimal-square"},
-		Dir:        dir,
+		ListenAddr:  "0.0.0.0:27680",
+		AdminToken:  randomToken(),
+		AllowLAN:    true,
+		ScanPaths:   []string{DefaultProjectRoot},
+		ProjectRoot: DefaultProjectRoot,
+		Update:      UpdateConfig{RemoveOrphans: false},
+		Automation:  AutomationConfig{WebhookType: "generic", NotifyOnUpdates: true},
+		UI:          UIConfig{Theme: "minimal-square"},
+		Dir:         dir,
 	}
 }
 
 func Validate(cfg Config) error {
+	if _, _, err := NormalizeProjectPaths(cfg.ProjectRoot, cfg.ScanPaths); err != nil {
+		return err
+	}
 	host, _, err := net.SplitHostPort(cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("invalid listenAddr: %w", err)
@@ -133,6 +152,50 @@ func Validate(cfg Config) error {
 		return nil
 	}
 	return fmt.Errorf("listenAddr %q is not localhost; set allowLan: true to bind outside localhost", cfg.ListenAddr)
+}
+
+func NormalizeProjectPaths(projectRoot string, scanPaths []string) (string, []string, error) {
+	projectRoot = strings.TrimSpace(projectRoot)
+	if projectRoot == "" {
+		projectRoot = DefaultProjectRoot
+	}
+	if !filepath.IsAbs(projectRoot) {
+		return "", nil, errors.New("projectRoot must be an absolute path")
+	}
+	projectRoot = filepath.Clean(projectRoot)
+
+	normalized := make([]string, 0, len(scanPaths))
+	seen := make(map[string]struct{}, len(scanPaths))
+	for _, path := range scanPaths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			return "", nil, errors.New("scanPaths must contain only absolute paths")
+		}
+		path = filepath.Clean(path)
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		normalized = append(normalized, path)
+	}
+	return projectRoot, normalized, nil
+}
+
+func EffectiveScanPaths(cfg Config) []string {
+	projectRoot, scanPaths, err := NormalizeProjectPaths(cfg.ProjectRoot, cfg.ScanPaths)
+	if err != nil {
+		return nil
+	}
+	paths := append([]string(nil), scanPaths...)
+	for _, path := range paths {
+		if path == projectRoot {
+			return paths
+		}
+	}
+	return append(paths, projectRoot)
 }
 
 func ValidateAutomation(cfg AutomationConfig) error {
