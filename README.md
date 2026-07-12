@@ -56,7 +56,7 @@ chmod 755 dockertree.sh
 
 默认二进制文件路径为 `~/.local/bin/dockertree`，运行日志和 PID 文件存储在 `~/.local/state/dockertree/` 下。新安装会创建默认监听 `0.0.0.0:27680` 的配置。普通卸载会保留 `~/.config/dockertree/`。如需删除二进制文件、运行时文件和全部 Dockertree 配置，请执行 `./dockertree.sh uninstall --purge --yes`。
 
-`install` 和 `start` 会自动注册设备重启后的启动任务：Linux 使用 `~/.config/systemd/user/dockertree.service`，macOS 使用 `~/Library/LaunchAgents/io.github.zasenjc.dockertree.plist`。Linux 会调用 `systemctl --user enable`；如果当前环境没有可用的用户级 systemd 会话，脚本会保留 unit 文件并给出手动启用提示。macOS 会在用户登录后由 LaunchAgent 自动启动。`uninstall` 会同时禁用并删除这些自启动配置。
+`install` 和 `start` 会自动注册设备重启后的启动任务：Linux 使用系统级 `/etc/systemd/system/dockertree.service`，并以执行安装的普通用户身份运行 Dockertree，因此不依赖登录会话或用户级 D-Bus；安装 unit 和执行 `systemctl enable` 时可能要求输入 `sudo` 密码。macOS 使用 `~/Library/LaunchAgents/io.github.zasenjc.dockertree.plist`，在用户登录后自动启动。Docker 尚未就绪时，两种任务都会延迟后重试。`uninstall` 会同时禁用并删除这些自启动配置。请使用普通用户执行管理脚本，不要对整个脚本使用 `sudo`。
 
 可通过 `DOCKERTREE_INSTALL_DIR`、`DOCKERTREE_STATE_DIR` 或 `DOCKERTREE_CONFIG_DIR` 覆盖这些路径。安装或启动时如果监听端口已被占用，脚本会提示输入新端口并保存到 `config.yaml`；非交互环境可通过 `DOCKERTREE_PORT=28680 ./dockertree.sh start` 指定并保存端口。
 

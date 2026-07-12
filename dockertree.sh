@@ -20,8 +20,9 @@ CONFIG_DIR=${DOCKERTREE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dockertree
 BINARY=$INSTALL_DIR/dockertree
 PID_FILE=$STATE_DIR/dockertree.pid
 LOG_FILE=$STATE_DIR/dockertree.log
-SYSTEMD_UNIT_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+SYSTEMD_UNIT_DIR=${DOCKERTREE_SYSTEMD_UNIT_DIR:-/etc/systemd/system}
 SYSTEMD_UNIT_FILE=$SYSTEMD_UNIT_DIR/dockertree.service
+LEGACY_SYSTEMD_UNIT_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/dockertree.service
 LAUNCH_AGENT_DIR=$HOME/Library/LaunchAgents
 LAUNCH_AGENT_FILE=$LAUNCH_AGENT_DIR/io.github.zasenjc.dockertree.plist
 START_TIMEOUT=${DOCKERTREE_START_TIMEOUT:-1}
@@ -492,20 +493,34 @@ xml_escape() {
 }
 
 install_systemd_autostart() {
-  mkdir -p "$SYSTEMD_UNIT_DIR" || return 1
+  if ! command -v systemctl >/dev/null 2>&1; then
+    AUTOSTART_CONFIGURED=false
+    echo "提示: 未找到 systemctl，无法配置设备重启后自动启动。" >&2
+    return 0
+  fi
+  service_user=${DOCKERTREE_SERVICE_USER:-$(id -un 2>/dev/null)}
+  case "$service_user" in
+    ''|*[!A-Za-z0-9_.-]*) return 1 ;;
+  esac
+  mkdir -p "$STATE_DIR" || return 1
   manager_value=$(systemd_escape "$SCRIPT_PATH")
   install_value=$(systemd_escape "$INSTALL_DIR")
   state_value=$(systemd_escape "$STATE_DIR")
   config_value=$(systemd_escape "$CONFIG_DIR")
+  home_value=$(systemd_escape "$HOME")
   path_value=$(systemd_escape "${PATH:-/usr/local/bin:/usr/bin:/bin}")
-  unit_tmp=$SYSTEMD_UNIT_FILE.tmp-$$
+  unit_tmp=$STATE_DIR/.dockertree-service-$$
   cat >"$unit_tmp" <<EOF
 [Unit]
 Description=Dockertree local Docker console
+Wants=docker.service
 After=docker.service
 
 [Service]
 Type=oneshot
+User=$service_user
+WorkingDirectory="$home_value"
+Environment="HOME=$home_value"
 Environment="DOCKERTREE_INSTALL_DIR=$install_value"
 Environment="DOCKERTREE_STATE_DIR=$state_value"
 Environment="DOCKERTREE_CONFIG_DIR=$config_value"
@@ -519,23 +534,37 @@ Restart=on-failure
 RestartSec=10
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 EOF
   chmod 644 "$unit_tmp" || {
     rm -f "$unit_tmp"
     return 1
   }
-  mv -f "$unit_tmp" "$SYSTEMD_UNIT_FILE" || return 1
 
-  if ! command -v systemctl >/dev/null 2>&1; then
-    echo "提示: 已写入 systemd 用户服务，但未找到 systemctl，无法立即启用。" >&2
+  if [ -f "$LEGACY_SYSTEMD_UNIT_FILE" ]; then
+    systemctl --user disable dockertree.service >/dev/null 2>&1 || true
+    rm -f "$LEGACY_SYSTEMD_UNIT_FILE" || true
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+  fi
+
+  if [ -f "$SYSTEMD_UNIT_FILE" ] && cmp -s "$unit_tmp" "$SYSTEMD_UNIT_FILE" &&
+    systemctl is-enabled --quiet dockertree.service >/dev/null 2>&1; then
+    rm -f "$unit_tmp"
     return 0
   fi
-  if ! systemctl --user daemon-reload >/dev/null 2>&1 ||
-    ! systemctl --user enable dockertree.service >/dev/null 2>&1; then
-    echo "提示: 已写入 systemd 用户服务，但当前用户会话无法启用；登录后执行 systemctl --user enable dockertree.service。" >&2
-    return 0
-  fi
+
+  run_privileged mkdir -p "$SYSTEMD_UNIT_DIR" || {
+    rm -f "$unit_tmp"
+    return 1
+  }
+  run_privileged cp "$unit_tmp" "$SYSTEMD_UNIT_FILE" || {
+    rm -f "$unit_tmp"
+    return 1
+  }
+  rm -f "$unit_tmp"
+  run_privileged chmod 644 "$SYSTEMD_UNIT_FILE" || return 1
+  run_privileged systemctl daemon-reload >/dev/null 2>&1 || return 1
+  run_privileged systemctl enable dockertree.service >/dev/null 2>&1 || return 1
   return 0
 }
 
@@ -597,23 +626,27 @@ ensure_autostart() {
   if [ "${DOCKERTREE_AUTOSTART_CONTEXT:-0}" = "1" ]; then
     return 0
   fi
+  AUTOSTART_CONFIGURED=true
   case "$(platform_name)" in
     Linux) install_systemd_autostart || fail "无法注册 systemd 自动启动服务" ;;
     macOS) install_launchd_autostart || fail "无法注册 macOS 自动启动任务" ;;
     *) return 0 ;;
   esac
-  echo "已启用设备重启后自动启动。"
+  if [ "$AUTOSTART_CONFIGURED" = true ]; then
+    echo "已启用设备重启后自动启动。"
+  fi
 }
 
 remove_autostart() {
   case "$(platform_name)" in
     Linux)
       if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user disable dockertree.service >/dev/null 2>&1 || true
+        run_privileged systemctl disable dockertree.service >/dev/null 2>&1 || true
       fi
-      rm -f "$SYSTEMD_UNIT_FILE" || return 1
+      run_privileged rm -f "$SYSTEMD_UNIT_FILE" || return 1
+      rm -f "$LEGACY_SYSTEMD_UNIT_FILE" || true
       if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user daemon-reload >/dev/null 2>&1 || true
+        run_privileged systemctl daemon-reload >/dev/null 2>&1 || true
       fi
       ;;
     macOS)

@@ -130,6 +130,20 @@ func TestManagerInstallAndStartEnableLinuxAutostart(t *testing.T) {
 		t.Fatalf("install did not report autostart: %s", result.output)
 	}
 
+	if err := os.Remove(systemctlLog); err != nil {
+		t.Fatal(err)
+	}
+	result = h.run(t, "start")
+	if result.exitCode != 0 {
+		t.Fatalf("start failed: %s", result.output)
+	}
+	if log := readTrimmed(t, systemctlLog); log != "is-enabled --quiet dockertree.service" {
+		t.Fatalf("start should reuse an enabled unchanged unit without privileged writes: %s", log)
+	}
+	if result := h.run(t, "stop"); result.exitCode != 0 {
+		t.Fatalf("stop failed: %s", result.output)
+	}
+
 	if err := os.Remove(unitPath); err != nil {
 		t.Fatal(err)
 	}
@@ -605,6 +619,7 @@ func newHarness(t *testing.T) *harness {
 			t.Fatal(err)
 		}
 	}
+	writeExecutable(t, filepath.Join(fakeBin, "uname"), "#!/bin/sh\nif [ \"${1:-}\" = \"-m\" ]; then echo arm64; else echo Darwin; fi\n")
 
 	template := filepath.Join(home, "fake-dockertree")
 	templateBody := `#!/bin/sh
@@ -717,6 +732,7 @@ esac
 			"DOCKERTREE_INSTALL_DIR=" + installDir,
 			"DOCKERTREE_STATE_DIR=" + stateDir,
 			"DOCKERTREE_CONFIG_DIR=" + configDir,
+			"DOCKERTREE_SYSTEMD_UNIT_DIR=" + filepath.Join(home, "systemd"),
 			"DOCKERTREE_START_TIMEOUT=1",
 			"DOCKERTREE_STOP_TIMEOUT=2",
 			"FAKE_GO_LOG=" + filepath.Join(home, "go.log"),
