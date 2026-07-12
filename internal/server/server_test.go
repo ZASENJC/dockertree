@@ -1,20 +1,40 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"dockertree/internal/config"
 	"dockertree/internal/core"
 	"dockertree/internal/docker"
 )
+
+type streamingFakeExecutor struct {
+	fakeExecutor
+	release chan struct{}
+}
+
+func (f *streamingFakeExecutor) Execute(_ context.Context, cmd docker.Command) (docker.Result, error) {
+	<-f.release
+	return docker.Result{Command: cmd.String(), Output: "pulling\ndone\n"}, nil
+}
+
+func (f *streamingFakeExecutor) ExecuteStream(_ context.Context, cmd docker.Command, emit func([]byte)) (docker.Result, error) {
+	emit([]byte("pulling\n"))
+	<-f.release
+	emit([]byte("done\n"))
+	return docker.Result{Command: cmd.String(), Output: "pulling\ndone\n"}, nil
+}
 
 type fakeInventory struct {
 	projects []core.Project
@@ -533,6 +553,110 @@ func TestLifecycleAndLogsEndpointsUseProjectContext(t *testing.T) {
 	}
 }
 
+func TestOperationRequestStreamsCommandOutputBeforeCompletion(t *testing.T) {
+	projects := []core.Project{{
+		ID:          "compose:mtp",
+		Name:        "mtp",
+		Type:        core.ProjectTypeCompose,
+		WorkingDir:  "/srv/mtp",
+		ConfigFiles: []string{"/srv/mtp/docker-compose.yml"},
+	}}
+	exec := &streamingFakeExecutor{release: make(chan struct{})}
+	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: projects}, fakeScanner{projects: projects}, exec).Handler()
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/api/projects/compose:mtp/actions/restart", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Accept", "application/x-ndjson")
+
+	responseCh := make(chan *http.Response, 1)
+	errorCh := make(chan error, 1)
+	go func() {
+		response, requestErr := ts.Client().Do(request)
+		if requestErr != nil {
+			errorCh <- requestErr
+			return
+		}
+		responseCh <- response
+	}()
+
+	var response *http.Response
+	select {
+	case response = <-responseCh:
+	case requestErr := <-errorCh:
+		close(exec.release)
+		t.Fatal(requestErr)
+	case <-time.After(300 * time.Millisecond):
+		close(exec.release)
+		t.Fatal("streaming response headers were not flushed before command completion")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "application/x-ndjson" {
+		close(exec.release)
+		t.Fatalf("status=%d content-type=%q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+
+	reader := bufio.NewReader(response.Body)
+	for _, want := range []string{`"type":"start"`, `"type":"command"`, `"data":"pulling\n"`} {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			close(exec.release)
+			t.Fatalf("read stream event: %v", readErr)
+		}
+		if !strings.Contains(line, want) {
+			close(exec.release)
+			t.Fatalf("stream event %q does not contain %q", line, want)
+		}
+	}
+
+	close(exec.release)
+	remaining, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read final output event: %v", err)
+	}
+	if !strings.Contains(remaining, `"data":"done\n"`) {
+		t.Fatalf("final output event = %q", remaining)
+	}
+	resultEvent, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read result event: %v", err)
+	}
+	if !strings.Contains(resultEvent, `"type":"result"`) || !strings.Contains(resultEvent, `"command":"docker compose`) {
+		t.Fatalf("result event = %q", resultEvent)
+	}
+}
+
+func TestOperationStreamPreservesJSONRequestBody(t *testing.T) {
+	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{}, fakeScanner{}, &fakeExecutor{}).Handler()
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/api/deploy/container/preview", strings.NewReader(`{"name":"stream-preview","image":"redis:7"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Accept", "application/x-ndjson")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := ts.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if strings.Contains(text, "invalid Read on closed Body") || !strings.Contains(text, `"type":"result"`) || !strings.Contains(text, `docker run -d --name stream-preview redis:7`) {
+		t.Fatalf("streamed preview lost its request body: %s", text)
+	}
+}
+
 func TestContainerStatsEndpointReturnsReadOnlySnapshot(t *testing.T) {
 	exec := &fakeExecutor{stats: []core.ContainerStats{{ContainerID: "abc123", Name: "redis", CPUPercent: 1.25, MemoryUsage: "42MiB / 1GiB", PIDs: 7}}}
 	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{}, fakeScanner{}, exec).Handler()
@@ -996,6 +1120,46 @@ func TestComposeDeployValidationFailurePreservesExistingFile(t *testing.T) {
 	}
 	if len(exec.commands) != 0 {
 		t.Fatalf("commands=%#v", exec.commands)
+	}
+}
+
+func TestComposeFormatNormalizesValidYAML(t *testing.T) {
+	exec := &fakeExecutor{}
+	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{}, fakeScanner{}, exec).Handler()
+	body := `{"composeContent":"services:\n web:\n  image: nginx:latest\n"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy/compose/format", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != http.StatusOK {
+		t.Fatalf("format status = %d body=%s", r.Code, r.Body.String())
+	}
+	var response struct {
+		NormalizedContent string `json:"normalizedContent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	want, err := docker.NormalizeComposeContent("services:\n web:\n  image: nginx:latest\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.NormalizedContent != want {
+		t.Fatalf("normalized content = %q, want %q", response.NormalizedContent, want)
+	}
+	if len(exec.commands) != 0 {
+		t.Fatalf("format must not execute Docker commands: %#v", exec.commands)
+	}
+}
+
+func TestComposeFormatRejectsInvalidYAML(t *testing.T) {
+	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{}, fakeScanner{}, &fakeExecutor{}).Handler()
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy/compose/format", strings.NewReader(`{"composeContent":"services: ["}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "invalid compose yaml") {
+		t.Fatalf("format status = %d body=%s", r.Code, r.Body.String())
 	}
 }
 

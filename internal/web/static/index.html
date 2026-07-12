@@ -177,8 +177,9 @@
                 <label>项目名称<input id="composeName" name="composeName" placeholder="my-service" /></label>
                 <label>Compose 路径<input id="composePath" name="composePath" value="/opt/&lt;项目名&gt;/compose.yml" readonly /></label>
               </div>
-              <label>Compose 内容<textarea id="composeContent" name="composeContent" spellcheck="false" placeholder="services:\n  web:\n    image: nginx:latest"></textarea></label>
+              <label>Compose 内容<textarea id="composeContent" class="compose-editor" name="composeContent" spellcheck="false" wrap="off" placeholder="services:\n  web:\n    image: nginx:latest"></textarea></label>
               <div class="actions inline-actions">
+                <button id="composeFormat" class="secondary" type="button">格式化</button>
                 <button id="composePreview" class="secondary" type="button">预览</button>
                 <button id="composeSave" class="secondary" type="button">仅保存</button>
                 <button id="composeDeploy" type="button">保存并部署</button>

@@ -72,6 +72,21 @@ func (e CLIExecutor) Inspect(ctx context.Context, containerID string) (core.Cont
 }
 
 func (e CLIExecutor) CheckUpdate(ctx context.Context, project core.Project) (core.UpdateCheck, error) {
+	return e.checkUpdate(ctx, project, func(cmd Command) (Result, error) {
+		return e.Execute(ctx, cmd)
+	})
+}
+
+func (e CLIExecutor) CheckUpdateStream(ctx context.Context, project core.Project, onCommand func(Command), emit func([]byte)) (core.UpdateCheck, error) {
+	return e.checkUpdate(ctx, project, func(cmd Command) (Result, error) {
+		if onCommand != nil {
+			onCommand(cmd)
+		}
+		return e.ExecuteStream(ctx, cmd, emit)
+	})
+}
+
+func (e CLIExecutor) checkUpdate(ctx context.Context, project core.Project, execute func(Command) (Result, error)) (core.UpdateCheck, error) {
 	check := core.UpdateCheck{ProjectID: project.ID, ProjectName: project.Name, CheckedAt: time.Now(), Status: "unknown"}
 	if project.Type != core.ProjectTypeCompose || len(project.ConfigFiles) == 0 {
 		check.Error = "project has no compose file"
@@ -81,7 +96,7 @@ func (e CLIExecutor) CheckUpdate(ctx context.Context, project core.Project) (cor
 	args = append(args, "--dry-run", "pull")
 	cmd := Command{Name: "docker", Args: args, Dir: project.WorkingDir}
 	check.Command = cmd.String()
-	result, err := e.Execute(ctx, cmd)
+	result, err := execute(cmd)
 	check.Output = result.Output
 	if err != nil {
 		check.Error = result.Error
@@ -91,7 +106,7 @@ func (e CLIExecutor) CheckUpdate(ctx context.Context, project core.Project) (cor
 		return check, err
 	}
 	check.Status = ClassifyUpdateOutput(result.Output)
-	check.Versions = e.updateVersions(ctx, project)
+	check.Versions = e.updateVersions(project, execute)
 	allDigestsComparable := len(check.Versions) > 0
 	for _, version := range check.Versions {
 		if !isImageDigest(version.Current) || !isImageDigest(version.Available) {
@@ -109,7 +124,7 @@ func (e CLIExecutor) CheckUpdate(ctx context.Context, project core.Project) (cor
 	return check, nil
 }
 
-func (e CLIExecutor) updateVersions(ctx context.Context, project core.Project) []core.UpdateVersion {
+func (e CLIExecutor) updateVersions(project core.Project, execute func(Command) (Result, error)) []core.UpdateVersion {
 	versions := make([]core.UpdateVersion, 0, len(project.Services))
 	for _, service := range project.Services {
 		image := strings.TrimSpace(service.Image)
@@ -121,7 +136,7 @@ func (e CLIExecutor) updateVersions(ctx context.Context, project core.Project) [
 			current = image
 		}
 		available := image
-		if result, err := e.Execute(ctx, RemoteImageDigestCommand(image)); err == nil {
+		if result, err := execute(RemoteImageDigestCommand(image)); err == nil {
 			if digest := parseRemoteImageDigest(result.Output); digest != "" {
 				available = digest
 			}

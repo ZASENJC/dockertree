@@ -351,6 +351,43 @@ func TestProjectComposeEditingStaysInDetailModalAndOnlySaves(t *testing.T) {
 	}
 }
 
+func TestComposeEditorsSupportFormattingAndKeyboardIndentation(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssData, err := Assets.ReadFile("static/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(indexData) + string(appData)
+	for _, want := range []string{
+		`id="composeContent" class="compose-editor"`,
+		`id="composeFormat"`,
+		`data-compose-editor-content class="compose-editor"`,
+		`data-compose-format`,
+		`/api/deploy/compose/format`,
+		"setupComposeEditor",
+		"handleComposeEditorKeydown",
+		"event.key === 'Tab'",
+		"event.shiftKey",
+		"setRangeText",
+		"event.key === 'Enter'",
+		"textarea.dispatchEvent(new Event('input', { bubbles: true }))",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("Compose editor formatting or indentation support missing %q", want)
+		}
+	}
+	if !strings.Contains(string(cssData), ".compose-editor") || !strings.Contains(string(cssData), "tab-size: 2") {
+		t.Fatal("Compose editor code formatting styles are missing")
+	}
+}
+
 func TestProjectRedeployStartsLiveLogRefreshImmediately(t *testing.T) {
 	appData, err := Assets.ReadFile("static/app.js")
 	if err != nil {
@@ -790,6 +827,29 @@ func TestMobileImageLayoutConstrainsLongImageNames(t *testing.T) {
 	} {
 		if !strings.Contains(css, want) {
 			t.Fatalf("image layout must allow long image names to shrink on mobile; missing %q", want)
+		}
+	}
+}
+
+func TestOperationRequestsRenderStreamingOutputInRealTime(t *testing.T) {
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(appData)
+	for _, want := range []string{
+		"application/x-ndjson",
+		"res.body.getReader()",
+		"TextDecoder",
+		"readOperationStream",
+		"appendOperationOutput",
+		"method !== 'GET'",
+		"event.type === 'command'",
+		"event.type === 'output'",
+		"operationOutput.scrollTop = operationOutput.scrollHeight",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("real-time operation output missing %q", want)
 		}
 	}
 }

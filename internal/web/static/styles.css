@@ -122,6 +122,13 @@ textarea {
   min-height: 84px;
 }
 
+.compose-editor {
+  tab-size: 2;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,

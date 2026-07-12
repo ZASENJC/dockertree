@@ -119,7 +119,7 @@ func (s *Server) checkProjectUpdate(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	check, err := s.exec.CheckUpdate(r.Context(), project)
+	check, err := s.checkUpdate(r.Context(), project)
 	s.recordUpdateCheck(check, err)
 	respond(w, check, err)
 }
@@ -145,7 +145,7 @@ func (s *Server) runUpdateChecks(ctx context.Context, notify bool) ([]core.Updat
 			timeout = defaultUpdateCheckTimeout
 		}
 		checkCtx, cancel := context.WithTimeout(ctx, timeout)
-		check, checkErr := s.exec.CheckUpdate(checkCtx, project)
+		check, checkErr := s.checkUpdate(checkCtx, project)
 		cancel()
 		s.recordUpdateCheck(check, checkErr)
 		checks = append(checks, check)

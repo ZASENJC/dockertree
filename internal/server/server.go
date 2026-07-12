@@ -165,6 +165,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/images/local", s.auth(s.localImages))
 	mux.HandleFunc("POST /api/deploy/container/preview", s.auth(s.previewContainerDeploy))
 	mux.HandleFunc("POST /api/deploy/container", s.auth(s.deployContainer))
+	mux.HandleFunc("POST /api/deploy/compose/format", s.auth(s.formatCompose))
 	mux.HandleFunc("POST /api/deploy/compose/preview", s.auth(s.previewComposeDeploy))
 	mux.HandleFunc("POST /api/deploy/compose/save", s.auth(s.saveCompose))
 	mux.HandleFunc("POST /api/deploy/compose", s.auth(s.deployCompose))
@@ -213,6 +214,10 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		cfg := s.currentConfig()
 		if cfg.AdminToken != "" && r.Header.Get("Authorization") != "Bearer "+cfg.AdminToken {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if acceptsOperationStream(r) {
+			s.streamOperationResponse(w, r, next)
 			return
 		}
 		next(w, r)
@@ -502,7 +507,7 @@ func (s *Server) checkContainerUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cmd := docker.ServiceUpdateCheckCommand(project, service.Name)
-	result, execErr := s.exec.Execute(r.Context(), cmd)
+	result, execErr := s.execute(r.Context(), cmd)
 	check := core.UpdateCheck{
 		ProjectID: project.ID, ProjectName: service.Name, CheckedAt: time.Now(), Command: cmd.String(),
 		Output: result.Output, Status: docker.ClassifyUpdateOutput(result.Output),
@@ -531,7 +536,7 @@ func (s *Server) deployContainerService(w http.ResponseWriter, r *http.Request) 
 		badRequest(w, errText("container updates require a Compose-managed service"))
 		return
 	}
-	inspection, inspectErr := s.exec.Execute(r.Context(), docker.ComposeConfigCommand(project))
+	inspection, inspectErr := s.execute(r.Context(), docker.ComposeConfigCommand(project))
 	if inspectErr != nil {
 		respond(w, inspection, inspectErr)
 		return
@@ -588,7 +593,7 @@ func (s *Server) containerLogs(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, err)
 		return
 	}
-	result, err := s.exec.Execute(r.Context(), docker.ContainerLogsCommand(id, options))
+	result, err := s.execute(r.Context(), docker.ContainerLogsCommand(id, options))
 	if err != nil {
 		respond(w, result, err)
 		return
@@ -817,6 +822,21 @@ func (s *Server) previewComposeDeploy(w http.ResponseWriter, r *http.Request) {
 	respond(w, preview, nil)
 }
 
+func (s *Server) formatCompose(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ComposeContent string `json:"composeContent"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	normalized, err := docker.NormalizeComposeContent(req.ComposeContent)
+	if err != nil {
+		badRequest(w, err)
+		return
+	}
+	respond(w, map[string]string{"normalizedContent": normalized}, nil)
+}
+
 func (s *Server) saveCompose(w http.ResponseWriter, r *http.Request) {
 	var apiReq composeDeployAPIRequest
 	if !decodeJSON(w, r, &apiReq) {
@@ -898,7 +918,7 @@ func (s *Server) applyCompose(w http.ResponseWriter, r *http.Request, req docker
 		return
 	}
 	defer os.Remove(stagedPath)
-	validationResult, err := s.exec.Execute(r.Context(), composeValidationCommand(req, target, stagedPath))
+	validationResult, err := s.execute(r.Context(), composeValidationCommand(req, target, stagedPath))
 	if err != nil {
 		respond(w, validationResult, err)
 		return
@@ -1087,7 +1107,7 @@ func (s *Server) composeRequiresBuild(ctx context.Context, project core.Project)
 	if project.Type != core.ProjectTypeCompose || len(project.ConfigFiles) == 0 {
 		return false, docker.Result{}, nil
 	}
-	result, err := s.exec.Execute(ctx, docker.ComposeConfigCommand(project))
+	result, err := s.execute(ctx, docker.ComposeConfigCommand(project))
 	if err != nil {
 		return false, result, err
 	}

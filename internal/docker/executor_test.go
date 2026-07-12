@@ -6,9 +6,55 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"dockertree/internal/core"
 )
+
+func TestCLIExecutorExecuteStreamEmitsOutputBeforeCommandCompletes(t *testing.T) {
+	exec := CLIExecutor{}
+	chunks := make(chan string, 4)
+	done := make(chan struct{})
+	var result Result
+	var execErr error
+
+	go func() {
+		result, execErr = exec.ExecuteStream(context.Background(), Command{
+			Name: "sh",
+			Args: []string{"-c", "printf 'first\\n'; sleep 0.3; printf 'second\\n'"},
+		}, func(chunk []byte) {
+			chunks <- string(chunk)
+		})
+		close(done)
+	}()
+
+	select {
+	case chunk := <-chunks:
+		if !strings.Contains(chunk, "first") {
+			t.Fatalf("first streamed chunk = %q", chunk)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("first command output was buffered until command completion")
+	}
+
+	select {
+	case <-done:
+		t.Fatal("command completed before the streaming assertion")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("streaming command did not complete")
+	}
+	if execErr != nil {
+		t.Fatalf("ExecuteStream() error = %v", execErr)
+	}
+	if result.Output != "first\nsecond\n" {
+		t.Fatalf("result output = %q", result.Output)
+	}
+}
 
 type recordingRunner struct {
 	outputs map[string]string

@@ -92,6 +92,11 @@ document.querySelector('#imageSearch').addEventListener('click', searchImages);
 document.querySelector('#refreshLocalImages').addEventListener('click', loadLocalImages);
 document.querySelector('#imagePreview').addEventListener('click', () => deployContainer(true));
 document.querySelector('#imageDeploy').addEventListener('click', () => deployContainer(false));
+const composeContentEditor = document.querySelector('#composeContent');
+setupComposeEditor(composeContentEditor);
+document.querySelector('#composeFormat').addEventListener('click', (event) => {
+  formatComposeEditor(composeContentEditor, deployOutput, event.currentTarget);
+});
 document.querySelector('#composePreview').addEventListener('click', () => deployCompose(true));
 document.querySelector('#composeSave').addEventListener('click', () => deployCompose(false, true));
 document.querySelector('#composeDeploy').addEventListener('click', () => deployCompose(false));
@@ -162,6 +167,88 @@ function setDeployMode(mode) {
   document.querySelector('#deployModeCompose').classList.toggle('active', !imageMode);
 }
 
+function setupComposeEditor(textarea) {
+  textarea.addEventListener('keydown', (event) => handleComposeEditorKeydown(event, textarea));
+}
+
+function handleComposeEditorKeydown(event, textarea) {
+  if (event.isComposing) return;
+  if (event.key === 'Tab') {
+    event.preventDefault();
+    indentComposeSelection(textarea, event.shiftKey);
+    return;
+  }
+  if (event.key === 'Enter' && textarea.selectionStart === textarea.selectionEnd) {
+    const caret = textarea.selectionStart;
+    const lineStart = textarea.value.lastIndexOf('\n', caret - 1) + 1;
+    const currentLine = textarea.value.slice(lineStart, caret);
+    const indentation = (currentLine.match(/^[ \t]*/) || [''])[0].replace(/\t/g, '  ');
+    const nestedIndent = /:\s*(?:#.*)?$/.test(currentLine) || /^\s*-\s*(?:#.*)?$/.test(currentLine) ? '  ' : '';
+    event.preventDefault();
+    textarea.setRangeText(`\n${indentation}${nestedIndent}`, caret, caret, 'end');
+    notifyComposeEditorInput(textarea);
+  }
+}
+
+function indentComposeSelection(textarea, outdent) {
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  if (start === end) {
+    if (!outdent) {
+      textarea.setRangeText('  ', start, end, 'end');
+      notifyComposeEditorInput(textarea);
+      return;
+    }
+    const lineStart = textarea.value.lastIndexOf('\n', start - 1) + 1;
+    const removable = (textarea.value.slice(lineStart).match(/^(?: {1,2}|\t)/) || [''])[0];
+    if (!removable) return;
+    textarea.setRangeText('', lineStart, lineStart + removable.length, 'end');
+    const caret = Math.max(lineStart, start - removable.length);
+    textarea.setSelectionRange(caret, caret);
+    notifyComposeEditorInput(textarea);
+    return;
+  }
+
+  const blockStart = textarea.value.lastIndexOf('\n', start - 1) + 1;
+  const selectionTail = end > start && textarea.value[end - 1] === '\n' ? end - 1 : end;
+  const nextLineBreak = textarea.value.indexOf('\n', selectionTail);
+  const blockEnd = nextLineBreak === -1 ? textarea.value.length : nextLineBreak;
+  const original = textarea.value.slice(blockStart, blockEnd);
+  const lines = original.split('\n');
+  const transformed = lines.map((line) => {
+    if (!outdent) return `  ${line}`;
+    return line.replace(/^(?: {1,2}|\t)/, '');
+  }).join('\n');
+  if (transformed === original) return;
+  textarea.setRangeText(transformed, blockStart, blockEnd, 'select');
+  notifyComposeEditorInput(textarea);
+}
+
+function notifyComposeEditorInput(textarea) {
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+async function formatComposeEditor(textarea, status, button) {
+  button.disabled = true;
+  if (status.classList) status.classList.remove('hidden');
+  status.textContent = '正在格式化 Compose 内容...';
+  try {
+    const result = await api('/api/deploy/compose/format', {
+      ...jsonPost({ composeContent: textarea.value }),
+      live: false,
+    });
+    if (textarea.value !== result.normalizedContent) {
+      textarea.value = result.normalizedContent;
+      notifyComposeEditorInput(textarea);
+    }
+    status.textContent = 'Compose 内容已格式化。';
+  } catch (err) {
+    status.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function setActiveView(view) {
   state.activeView = view;
   for (const button of document.querySelectorAll('#viewTabs [data-view]')) {
@@ -214,7 +301,7 @@ window.addEventListener('beforeunload', (event) => {
   event.returnValue = '';
 });
 
-async function scanInventory({ queueAfterCurrent = false } = {}) {
+async function scanInventory({ queueAfterCurrent = false, live = true } = {}) {
   while (state.scanPromise) {
     if (!queueAfterCurrent) return state.scanPromise;
     try {
@@ -224,7 +311,7 @@ async function scanInventory({ queueAfterCurrent = false } = {}) {
     }
   }
   const scanPromise = (async () => {
-    const projects = await api('/api/scan', { method: 'POST' });
+    const projects = await api('/api/scan', { method: 'POST', live });
     state.projects = projects;
     reconcileSelectedProject();
     updateTagFilter();
@@ -334,7 +421,7 @@ function syncAutoRefresh() {
 async function runAutoRefresh() {
   if (document.hidden || !state.token || state.scanPromise) return;
   try {
-    await scanInventory();
+    await scanInventory({ live: false });
     if (state.activeView === 'overview') await loadStats({ silent: true });
   } catch (err) {
     showOperationResult({ error: `自动刷新失败：${err.message}` });
@@ -342,17 +429,91 @@ async function runAutoRefresh() {
 }
 
 async function api(path, options = {}) {
+  const { live = true, ...requestOptions } = options;
+  const method = (requestOptions.method || 'GET').toUpperCase();
+  if (live && method !== 'GET') {
+    return apiOperation(path, requestOptions, method);
+  }
   const res = await fetch(path, {
-    ...options,
+    ...requestOptions,
     headers: {
       Authorization: `Bearer ${state.token}`,
-      ...(options.headers || {}),
+      ...(requestOptions.headers || {}),
     },
   });
   if (!res.ok) {
     throw new Error(await res.text());
   }
   return res.json();
+}
+
+async function apiOperation(path, options, method) {
+  operationOutput.textContent = `${method} ${path}\n正在连接操作日志...\n`;
+  operationOutput.scrollTop = operationOutput.scrollHeight;
+  const res = await fetch(path, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${state.token}`,
+      Accept: 'application/x-ndjson',
+      ...(options.headers || {}),
+    },
+  });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+  if (!res.headers.get('Content-Type')?.includes('application/x-ndjson') || !res.body) {
+    return res.json();
+  }
+  return readOperationStream(res, method, path);
+}
+
+async function readOperationStream(res, method, path) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = '';
+  let result;
+  let resultStatus = 0;
+  operationOutput.textContent = `${method} ${path}\n`;
+
+  const consume = (line) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === 'start') {
+      appendOperationOutput('正在执行...\n');
+    } else if (event.type === 'command') {
+      appendOperationOutput(`\n$ ${event.data}\n`);
+    } else if (event.type === 'output') {
+      appendOperationOutput(event.data || '');
+    } else if (event.type === 'error') {
+      appendOperationOutput(`\nerror: ${event.data}\n`);
+    } else if (event.type === 'result') {
+      result = event.result;
+      resultStatus = event.status || 200;
+      appendOperationOutput(resultStatus < 400 ? '\n操作完成。\n' : '\n操作失败。\n');
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = pending.split('\n');
+    pending = lines.pop() || '';
+    for (const line of lines) consume(line);
+    if (done) break;
+  }
+  if (pending) consume(pending);
+  if (!resultStatus) {
+    throw new Error('操作日志流在返回结果前意外结束。');
+  }
+  if (resultStatus >= 400) {
+    throw new Error(JSON.stringify(result));
+  }
+  return result;
+}
+
+function appendOperationOutput(text) {
+  operationOutput.textContent += text;
+  operationOutput.scrollTop = operationOutput.scrollHeight;
 }
 
 async function apiResult(path, options = {}) {
@@ -948,9 +1109,10 @@ function renderProjectDetail(project) {
           <button class="secondary" type="button" data-compose-cancel>关闭</button>
         </div>
         <p class="path" data-compose-editor-path></p>
-        <label>Compose 内容<textarea data-compose-editor-content spellcheck="false"></textarea></label>
+        <label>Compose 内容<textarea data-compose-editor-content class="compose-editor" spellcheck="false" wrap="off"></textarea></label>
         <pre class="hidden" data-compose-editor-status></pre>
         <div class="actions inline-actions">
+          <button class="secondary" type="button" data-compose-format>格式化</button>
           <button type="button" data-compose-save>保存 Compose</button>
         </div>
       </div>
@@ -1008,7 +1170,13 @@ function renderProjectDetail(project) {
     deleteProject(project);
   });
   const composeDialog = detail.querySelector('[data-compose-editor-dialog]');
+  const composeEditor = composeDialog.querySelector('[data-compose-editor-content]');
+  const composeStatus = composeDialog.querySelector('[data-compose-editor-status]');
+  setupComposeEditor(composeEditor);
   composeDialog.querySelector('[data-compose-cancel]').addEventListener('click', () => composeDialog.close());
+  composeDialog.querySelector('[data-compose-format]').addEventListener('click', (event) => {
+    formatComposeEditor(composeEditor, composeStatus, event.currentTarget);
+  });
   composeDialog.querySelector('[data-compose-save]').addEventListener('click', () => saveProjectCompose(project, composeDialog));
   initializeLogViewer(detail.querySelector('[data-log-viewer]'), services, () => logs(project.id));
   return detail;

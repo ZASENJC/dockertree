@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"dockertree/internal/core"
 )
@@ -70,6 +72,14 @@ type Executor interface {
 	CleanupPreview(ctx context.Context) (core.CleanupPreview, error)
 }
 
+type StreamingExecutor interface {
+	ExecuteStream(ctx context.Context, cmd Command, emit func([]byte)) (Result, error)
+}
+
+type StreamingUpdateChecker interface {
+	CheckUpdateStream(ctx context.Context, project core.Project, onCommand func(Command), emit func([]byte)) (core.UpdateCheck, error)
+}
+
 type LogOptions struct {
 	Tail       int
 	Timestamps bool
@@ -80,14 +90,29 @@ type CLIExecutor struct {
 }
 
 func (e CLIExecutor) Execute(ctx context.Context, cmd Command) (Result, error) {
+	return e.execute(ctx, cmd, nil)
+}
+
+func (e CLIExecutor) ExecuteStream(ctx context.Context, cmd Command, emit func([]byte)) (Result, error) {
+	return e.execute(ctx, cmd, emit)
+}
+
+func (e CLIExecutor) execute(ctx context.Context, cmd Command, emit func([]byte)) (Result, error) {
 	var out []byte
 	var err error
 	if e.Runner != nil {
 		out, err = e.Runner.Run(ctx, cmd.Name, cmd.Args...)
+		if emit != nil && len(out) > 0 {
+			emit(out)
+		}
 	} else {
 		process := exec.CommandContext(ctx, cmd.Name, cmd.Args...)
 		process.Dir = cmd.Dir
-		out, err = process.CombinedOutput()
+		collector := &streamCollector{emit: emit}
+		process.Stdout = collector
+		process.Stderr = collector
+		err = process.Run()
+		out = collector.Bytes()
 	}
 	result := Result{Command: cmd.String(), Output: string(out)}
 	if err != nil {
@@ -101,6 +126,29 @@ func (e CLIExecutor) Execute(ctx context.Context, cmd Command) (Result, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+type streamCollector struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+	emit   func([]byte)
+}
+
+func (w *streamCollector) Write(chunk []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	written, err := w.buffer.Write(chunk)
+	if written > 0 && w.emit != nil {
+		copyOfChunk := append([]byte(nil), chunk[:written]...)
+		w.emit(copyOfChunk)
+	}
+	return written, err
+}
+
+func (w *streamCollector) Bytes() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.buffer.Bytes()...)
 }
 
 func (e CLIExecutor) Logs(ctx context.Context, project core.Project, service string, options LogOptions) (string, error) {

@@ -13,7 +13,7 @@ import (
 )
 
 func (s *Server) executeRecorded(ctx context.Context, cmd docker.Command, targetType, targetID, targetName, action string) (docker.Result, error) {
-	result, err := s.exec.Execute(ctx, cmd)
+	result, err := s.execute(ctx, cmd)
 	result.Command = cmd.RedactedString()
 	s.recordOperation(core.OperationRecord{
 		ID:         fmt.Sprintf("%d", time.Now().UnixNano()),
