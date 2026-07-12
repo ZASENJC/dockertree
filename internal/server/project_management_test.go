@@ -118,6 +118,9 @@ func TestComposeSaveCreatesProjectWithoutStartingContainers(t *testing.T) {
 		t.Fatalf("save status=%d body=%s", r.Code, r.Body.String())
 	}
 	wantPath := filepath.Join(root, "demo", "compose.yml")
+	if !strings.Contains(r.Body.String(), `"saved":true`) || !strings.Contains(r.Body.String(), `"deployed":false`) || !strings.Contains(r.Body.String(), wantPath) {
+		t.Fatalf("save response missing outcome: %s", r.Body.String())
+	}
 	data, err := os.ReadFile(wantPath)
 	if err != nil {
 		t.Fatalf("saved compose file: %v", err)
@@ -130,6 +133,30 @@ func TestComposeSaveCreatesProjectWithoutStartingContainers(t *testing.T) {
 	}
 	if inv.saves != 1 {
 		t.Fatalf("save should refresh inventory, saves=%d", inv.saves)
+	}
+}
+
+func TestComposeProjectNameCannotEscapeThroughSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	exec := &fakeExecutor{}
+	h := New(config.Config{AdminToken: "secret", ProjectRoot: root}, &fakeInventory{}, &mutableScanner{}, exec).Handler()
+	body := `{"name":"linked","composeContent":"services:\n  web:\n    image: nginx\n"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/deploy/compose/save", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer secret")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != http.StatusBadRequest {
+		t.Fatalf("symlink escape status=%d body=%s", r.Code, r.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(outside, "compose.yml")); !os.IsNotExist(err) {
+		t.Fatalf("compose file escaped project root: %v", err)
+	}
+	if len(exec.commands) != 0 {
+		t.Fatalf("symlink escape executed commands: %#v", exec.commands)
 	}
 }
 

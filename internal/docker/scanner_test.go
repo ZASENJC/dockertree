@@ -65,6 +65,24 @@ func TestScannerAppliesUpdatedScanPathsWithoutRestart(t *testing.T) {
 	}
 }
 
+func TestScannerCopiesUpdatedScanPaths(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{root}
+	scanner := NewScanner(fakeRunner{
+		"compose ls --format json":  `[]`,
+		"ps -a --format {{json .}}": ``,
+	}, nil)
+	scanner.SetScanPaths(paths)
+	paths[0] = filepath.Join(root, "changed")
+
+	scanner.mu.RLock()
+	got := append([]string(nil), scanner.scanPaths...)
+	scanner.mu.RUnlock()
+	if len(got) != 1 || got[0] != root {
+		t.Fatalf("scanner retained caller slice: %#v", got)
+	}
+}
+
 func TestScannerKeepsSameNamedComposeDirectoriesSeparate(t *testing.T) {
 	root := t.TempDir()
 	firstDir := filepath.Join(root, "first", "app")
