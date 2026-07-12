@@ -102,6 +102,88 @@ func TestManagerLifecycle(t *testing.T) {
 	}
 }
 
+func TestManagerInstallAndStartEnableLinuxAutostart(t *testing.T) {
+	h := newHarness(t)
+	fakeBin := filepath.Join(h.home, "fake-bin")
+	writeExecutable(t, filepath.Join(fakeBin, "uname"), "#!/bin/sh\nif [ \"${1:-}\" = \"-m\" ]; then echo x86_64; else echo Linux; fi\n")
+	systemctlLog := filepath.Join(h.home, "systemctl.log")
+	writeExecutable(t, filepath.Join(fakeBin, "systemctl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${FAKE_SYSTEMCTL_LOG:?}\"\n")
+	h.env = append(h.env, "FAKE_SYSTEMCTL_LOG="+systemctlLog)
+
+	result := h.run(t, "install")
+	if result.exitCode != 0 {
+		t.Fatalf("install failed: %s", result.output)
+	}
+	unitPath := filepath.Join(h.home, ".config", "systemd", "user", "dockertree.service")
+	unit := readTrimmed(t, unitPath)
+	for _, want := range []string{h.managerPath(t), "start", "WantedBy=default.target"} {
+		if !strings.Contains(unit, want) {
+			t.Fatalf("systemd unit missing %q: %s", want, unit)
+		}
+	}
+	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "--user daemon-reload") || !strings.Contains(log, "--user enable dockertree.service") {
+		t.Fatalf("install did not enable the systemd user service: %s", log)
+	}
+	if !strings.Contains(result.output, "已启用设备重启后自动启动") {
+		t.Fatalf("install did not report autostart: %s", result.output)
+	}
+
+	if err := os.Remove(unitPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(systemctlLog); err != nil {
+		t.Fatal(err)
+	}
+	result = h.run(t, "start")
+	if result.exitCode != 0 {
+		t.Fatalf("start failed: %s", result.output)
+	}
+	if _, err := os.Stat(unitPath); err != nil {
+		t.Fatalf("start did not restore the systemd unit: %v", err)
+	}
+	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "--user enable dockertree.service") {
+		t.Fatalf("start did not re-enable the systemd user service: %s", log)
+	}
+
+	if result := h.run(t, "uninstall"); result.exitCode != 0 {
+		t.Fatalf("uninstall failed: %s", result.output)
+	}
+	if _, err := os.Stat(unitPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("uninstall left the systemd unit behind: %v", err)
+	}
+	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "--user disable dockertree.service") {
+		t.Fatalf("uninstall did not disable the systemd user service: %s", log)
+	}
+}
+
+func TestManagerInstallAndUninstallManageMacOSLaunchAgent(t *testing.T) {
+	h := newHarness(t)
+	fakeBin := filepath.Join(h.home, "fake-bin")
+	writeExecutable(t, filepath.Join(fakeBin, "uname"), "#!/bin/sh\nif [ \"${1:-}\" = \"-m\" ]; then echo arm64; else echo Darwin; fi\n")
+
+	result := h.run(t, "install")
+	if result.exitCode != 0 {
+		t.Fatalf("install failed: %s", result.output)
+	}
+	plistPath := filepath.Join(h.home, "Library", "LaunchAgents", "io.github.zasenjc.dockertree.plist")
+	plist := readTrimmed(t, plistPath)
+	for _, want := range []string{h.managerPath(t), "<string>start</string>", "<key>RunAtLoad</key>"} {
+		if !strings.Contains(plist, want) {
+			t.Fatalf("launch agent missing %q: %s", want, plist)
+		}
+	}
+	if !strings.Contains(result.output, "已启用设备重启后自动启动") {
+		t.Fatalf("install did not report autostart: %s", result.output)
+	}
+
+	if result := h.run(t, "uninstall"); result.exitCode != 0 {
+		t.Fatalf("uninstall failed: %s", result.output)
+	}
+	if _, err := os.Stat(plistPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("uninstall left the launch agent behind: %v", err)
+	}
+}
+
 func TestManagerWithoutCommandShowsHelp(t *testing.T) {
 	h := newHarness(t)
 	result := h.run(t)
@@ -754,6 +836,14 @@ func (h *harness) runWithInput(t *testing.T, input string, args ...string) comma
 	}
 	t.Fatalf("run manager: %v", err)
 	return commandResult{}
+}
+
+func (h *harness) managerPath(t *testing.T) string {
+	t.Helper()
+	if h.manager != "" {
+		return h.manager
+	}
+	return managerPath(t)
 }
 
 func managerPath(t *testing.T) string {
