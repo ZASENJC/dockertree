@@ -713,6 +713,30 @@ func TestMaintenanceAutomationAssets(t *testing.T) {
 	}
 }
 
+func TestMaintenanceUpdateRowsShowVersionsAndOneClickDeploy(t *testing.T) {
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssData, err := Assets.ReadFile("static/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(appData)
+	for _, want := range []string{
+		"renderUpdateVersions", "version.current", "version.available", "data-update-versions",
+		"data-deploy-update", "一键更新并部署", "deployCheckedProject",
+		"/api/projects/${encodeURIComponent(check.projectId)}/actions/deploy",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("maintenance update row missing %q", want)
+		}
+	}
+	if !strings.Contains(string(cssData), ".update-check-versions") || !strings.Contains(string(cssData), ".update-check-actions") {
+		t.Fatal("maintenance update row layout styles are missing")
+	}
+}
+
 func TestAdvancedDeployComposeDiffAndTemplateAssets(t *testing.T) {
 	indexData, err := Assets.ReadFile("static/index.html")
 	if err != nil {

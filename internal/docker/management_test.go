@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -34,12 +35,25 @@ func TestCLIExecutorInspectReturnsSafeFieldsOnly(t *testing.T) {
 }
 
 func TestCLIExecutorUpdateCheckUsesComposeDryRun(t *testing.T) {
-	project := core.Project{ID: "compose:app", Name: "app", Type: core.ProjectTypeCompose, WorkingDir: "/srv/app", ConfigFiles: []string{"/srv/app/compose.yml"}}
+	project := core.Project{
+		ID: "compose:app", Name: "app", Type: core.ProjectTypeCompose, WorkingDir: "/srv/app", ConfigFiles: []string{"/srv/app/compose.yml"},
+		Services: []core.Service{{
+			Name: "web", Image: "registry/app:latest",
+			Labels: map[string]string{"com.docker.compose.image": "sha256:1111111111111111111111111111111111111111111111111111111111111111"},
+		}},
+	}
 	command := "docker compose -f /srv/app/compose.yml --dry-run pull"
-	runner := &recordingRunner{outputs: map[string]string{command: "DRY-RUN MODE - web Pulled"}}
+	digestCommand := "docker buildx imagetools inspect --format {{json .Manifest.Digest}} registry/app:latest"
+	runner := &recordingRunner{outputs: map[string]string{
+		command:       "DRY-RUN MODE - web Pulled",
+		digestCommand: `"sha256:2222222222222222222222222222222222222222222222222222222222222222"`,
+	}}
 	check, err := (CLIExecutor{Runner: runner}).CheckUpdate(context.Background(), project)
 	if err != nil || check.Status != "available" || check.Command != command {
 		t.Fatalf("check = %#v err=%v", check, err)
+	}
+	if len(check.Versions) != 1 || check.Versions[0].Service != "web" || check.Versions[0].Current == check.Versions[0].Available {
+		t.Fatalf("versions = %#v", check.Versions)
 	}
 
 	runner.outputs[command] = "Image is up to date"
@@ -52,6 +66,14 @@ func TestCLIExecutorUpdateCheckUsesComposeDryRun(t *testing.T) {
 	check, err = (CLIExecutor{Runner: runner}).CheckUpdate(context.Background(), project)
 	if err != nil || check.Status != "available" {
 		t.Fatalf("mixed update check = %#v err=%v", check, err)
+	}
+}
+
+func TestRemoteImageDigestCommandUsesBuildxImagetools(t *testing.T) {
+	cmd := RemoteImageDigestCommand(" registry/app:latest ")
+	want := Command{Name: "docker", Args: []string{"buildx", "imagetools", "inspect", "--format", "{{json .Manifest.Digest}}", "registry/app:latest"}}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %#v, want %#v", cmd, want)
 	}
 }
 
