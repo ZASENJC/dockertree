@@ -296,6 +296,30 @@ func TestDeployUIAssetsExposeBothDeploymentModes(t *testing.T) {
 	}
 }
 
+func TestProjectDirectoryAndComposeEditingWorkflowAssets(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined := string(indexData) + string(appData)
+	for _, want := range []string{
+		"projectRoot", "scanPaths", "saveProjectSettings", "/api/settings/projects",
+		"composeFiles", "editComposeFile", "/compose?path=", "composeSave",
+		"/api/deploy/compose/save", "syncComposePath", "仅保存", "保存并部署",
+	} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("project directory and compose editing workflow missing %q", want)
+		}
+	}
+	if !strings.Contains(string(indexData), `id="composePath"`) || !strings.Contains(string(indexData), "readonly") {
+		t.Fatal("derived compose path must be displayed as a read-only field")
+	}
+}
+
 func TestLocalImagesUIAssets(t *testing.T) {
 	indexData, err := Assets.ReadFile("static/index.html")
 	if err != nil {

@@ -27,6 +27,12 @@ func TestLoadCreatesMigratableDefaults(t *testing.T) {
 	if cfg.Update.RemoveOrphans {
 		t.Fatal("RemoveOrphans should default to false")
 	}
+	if cfg.ProjectRoot != "/opt" {
+		t.Fatalf("ProjectRoot = %q, want /opt", cfg.ProjectRoot)
+	}
+	if len(cfg.ScanPaths) != 1 || cfg.ScanPaths[0] != "/opt" {
+		t.Fatalf("ScanPaths = %#v, want [/opt]", cfg.ScanPaths)
+	}
 	if cfg.Automation.UpdateCheckIntervalMinutes != 0 || cfg.Automation.WebhookType != "generic" || !cfg.Automation.NotifyOnUpdates {
 		t.Fatalf("unexpected automation defaults: %#v", cfg.Automation)
 	}
