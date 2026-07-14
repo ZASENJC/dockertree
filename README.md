@@ -10,7 +10,7 @@ Dockertree 是一个用于管理 Docker 和 Docker Compose 项目的轻量级本
 - 对没有 Compose 标签的独立 Docker 容器单独进行管理。
 - 默认将可迁移的配置和清单存储在 `~/.config/dockertree/` 下。
 - 默认在 `0.0.0.0:27680` 提供简洁的内置 Web UI，并通过令牌保护 API 访问。
-- 部署前提供保守的更新预览：依次执行 `pull`、可选的 `build`，再执行 `up -d`。
+- 部署前提供保守的更新预览：依次执行 `pull` 和 `up -d`，不会隐式重新构建本地镜像。
 - 支持两种新服务部署方式：搜索镜像名称并通过 `docker run` 部署，或按项目名称自动创建 Compose 项目目录，并选择仅保存配置或保存后执行 `docker compose up -d`。
 - 列出本地已下载的 Docker 镜像，并可将其复用于镜像部署。
 - 容器、Compose 项目和镜像/部署采用点击切换的独立页面。

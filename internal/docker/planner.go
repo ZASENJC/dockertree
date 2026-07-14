@@ -2,7 +2,7 @@ package docker
 
 import "dockertree/internal/core"
 
-func PreviewUpdate(project core.Project, requiresBuild bool, removeOrphans bool) core.UpdatePlan {
+func PreviewUpdate(project core.Project, removeOrphans bool) core.UpdatePlan {
 	plan := core.UpdatePlan{ProjectID: project.ID, ProjectName: project.Name, WorkingDir: project.WorkingDir}
 	for _, svc := range project.Services {
 		plan.Services = append(plan.Services, svc.Name)
@@ -15,7 +15,7 @@ func PreviewUpdate(project core.Project, requiresBuild bool, removeOrphans bool)
 		plan.Warnings = append(plan.Warnings, "No compose file is known for this project. Run scan again or add a scan path.")
 		return plan
 	}
-	for _, cmd := range UpdateCommands(project, requiresBuild, removeOrphans) {
+	for _, cmd := range UpdateCommands(project, removeOrphans) {
 		plan.Commands = append(plan.Commands, cmd.String())
 	}
 	plan.CanDeploy = true

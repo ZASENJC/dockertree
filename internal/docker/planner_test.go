@@ -16,7 +16,7 @@ func TestPreviewUpdateDoesNotBuildComposeServicesAutomatically(t *testing.T) {
 		Services:    []core.Service{{Name: "api"}, {Name: "web"}},
 	}
 
-	plan := PreviewUpdate(project, true, false)
+	plan := PreviewUpdate(project, false)
 
 	if !plan.CanDeploy || plan.RequiresBuild {
 		t.Fatalf("unexpected flags: %#v", plan)
@@ -44,7 +44,7 @@ func TestPreviewUpdateQuotesComposePathsWithSpaces(t *testing.T) {
 		ConfigFiles: []string{"/srv/photo tree/docker-compose.yml"},
 	}
 
-	plan := PreviewUpdate(project, false, true)
+	plan := PreviewUpdate(project, true)
 	if plan.Commands[0] != "docker compose -f '/srv/photo tree/docker-compose.yml' --progress json pull" {
 		t.Fatalf("unexpected quoted command: %q", plan.Commands[0])
 	}
@@ -54,7 +54,7 @@ func TestPreviewUpdateQuotesComposePathsWithSpaces(t *testing.T) {
 }
 
 func TestPreviewUpdateWarnsForStandaloneContainers(t *testing.T) {
-	plan := PreviewUpdate(core.Project{Name: "solo", Type: core.ProjectTypeStandalone}, false, false)
+	plan := PreviewUpdate(core.Project{Name: "solo", Type: core.ProjectTypeStandalone}, false)
 	if plan.CanDeploy {
 		t.Fatal("standalone containers should not be deployable in v1")
 	}

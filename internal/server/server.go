@@ -375,7 +375,7 @@ func (s *Server) previewUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.currentConfig()
-	respond(w, docker.PreviewUpdate(project, false, cfg.Update.RemoveOrphans), nil)
+	respond(w, docker.PreviewUpdate(project, cfg.Update.RemoveOrphans), nil)
 }
 
 func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {
@@ -389,14 +389,14 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.currentConfig()
-	plan := docker.PreviewUpdate(project, false, cfg.Update.RemoveOrphans)
+	plan := docker.PreviewUpdate(project, cfg.Update.RemoveOrphans)
 	if !plan.CanDeploy {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(plan)
 		return
 	}
 	results := []docker.Result{}
-	for _, cmd := range docker.UpdateCommands(project, false, cfg.Update.RemoveOrphans) {
+	for _, cmd := range docker.UpdateCommands(project, cfg.Update.RemoveOrphans) {
 		result, err := s.executeRecorded(r.Context(), cmd, "project", project.ID, project.Name, "deploy")
 		results = append(results, result)
 		if err != nil {
@@ -527,7 +527,7 @@ func (s *Server) deployContainerService(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	results := make([]docker.Result, 0, 3)
-	for _, cmd := range docker.ServiceUpdateCommands(project, service.Name, false) {
+	for _, cmd := range docker.ServiceUpdateCommands(project, service.Name) {
 		result, execErr := s.executeRecorded(r.Context(), cmd, "container", containerID, service.Name, "deploy")
 		results = append(results, result)
 		if execErr != nil {
