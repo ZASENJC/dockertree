@@ -118,13 +118,15 @@ func TestManagerInstallAndStartEnableLinuxAutostart(t *testing.T) {
 	}
 	unitPath := filepath.Join(systemdDir, "dockertree.service")
 	unit := readTrimmed(t, unitPath)
-	for _, want := range []string{h.managerPath(t), "start", "User=dockertree-test", "Environment=\"HOME=" + h.home + "\"", "WantedBy=multi-user.target"} {
+	for _, want := range []string{h.managerPath(t), " run", "Type=simple", "User=dockertree-test", "Environment=\"HOME=" + h.home + "\"", "WantedBy=multi-user.target"} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("systemd unit missing %q: %s", want, unit)
 		}
 	}
-	if strings.Contains(unit, "WorkingDirectory=") {
-		t.Fatalf("systemd unit should not require a working directory: %s", unit)
+	for _, forbidden := range []string{"WorkingDirectory=", "Type=oneshot", "RemainAfterExit="} {
+		if strings.Contains(unit, forbidden) {
+			t.Fatalf("systemd unit should not contain %q: %s", forbidden, unit)
+		}
 	}
 	if log := readTrimmed(t, systemctlLog); !strings.Contains(log, "daemon-reload") || !strings.Contains(log, "enable dockertree.service") || strings.Contains(log, "--user") {
 		t.Fatalf("install did not enable the system service: %s", log)
@@ -186,10 +188,13 @@ func TestManagerInstallAndUninstallManageMacOSLaunchAgent(t *testing.T) {
 	}
 	plistPath := filepath.Join(h.home, "Library", "LaunchAgents", "io.github.zasenjc.dockertree.plist")
 	plist := readTrimmed(t, plistPath)
-	for _, want := range []string{h.managerPath(t), "<string>start</string>", "<key>RunAtLoad</key>", "<key>SuccessfulExit</key>", "<integer>10</integer>"} {
+	for _, want := range []string{h.managerPath(t), "<string>run</string>", "<key>RunAtLoad</key>", "<key>SuccessfulExit</key>", "<integer>10</integer>"} {
 		if !strings.Contains(plist, want) {
 			t.Fatalf("launch agent missing %q: %s", want, plist)
 		}
+	}
+	if strings.Contains(plist, "<string>start</string>") {
+		t.Fatalf("launch agent must keep the managed process in the foreground: %s", plist)
 	}
 	if !strings.Contains(result.output, "已启用设备重启后自动启动") {
 		t.Fatalf("install did not report autostart: %s", result.output)
@@ -200,6 +205,50 @@ func TestManagerInstallAndUninstallManageMacOSLaunchAgent(t *testing.T) {
 	}
 	if _, err := os.Stat(plistPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("uninstall left the launch agent behind: %v", err)
+	}
+}
+
+func TestManagerAutostartRunStaysForegroundUntilStopped(t *testing.T) {
+	h := newHarness(t)
+	if result := h.run(t, "install"); result.exitCode != 0 {
+		t.Fatalf("install failed: %s", result.output)
+	}
+
+	cmd := exec.Command(h.managerPath(t), "run")
+	cmd.Dir = h.home
+	cmd.Env = append(os.Environ(), h.env...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		select {
+		case <-done:
+		default:
+		}
+	})
+
+	select {
+	case err := <-done:
+		t.Fatalf("autostart run exited before the managed process stopped: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	waitForFileContent(t, h.record, h.configDir)
+
+	if result := h.run(t, "stop"); result.exitCode != 0 {
+		t.Fatalf("stop failed: %s", result.output)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("autostart run failed after an intentional stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("autostart run did not exit after stop")
 	}
 }
 
