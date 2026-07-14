@@ -3,7 +3,7 @@ package docker
 import "dockertree/internal/core"
 
 func PreviewUpdate(project core.Project, requiresBuild bool, removeOrphans bool) core.UpdatePlan {
-	plan := core.UpdatePlan{ProjectID: project.ID, ProjectName: project.Name, WorkingDir: project.WorkingDir, RequiresBuild: requiresBuild}
+	plan := core.UpdatePlan{ProjectID: project.ID, ProjectName: project.Name, WorkingDir: project.WorkingDir}
 	for _, svc := range project.Services {
 		plan.Services = append(plan.Services, svc.Name)
 	}

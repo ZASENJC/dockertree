@@ -374,13 +374,8 @@ func (s *Server) previewUpdate(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	requiresBuild, inspection, err := s.composeRequiresBuild(r.Context(), project)
-	if err != nil {
-		respond(w, inspection, err)
-		return
-	}
 	cfg := s.currentConfig()
-	respond(w, docker.PreviewUpdate(project, requiresBuild, cfg.Update.RemoveOrphans), nil)
+	respond(w, docker.PreviewUpdate(project, false, cfg.Update.RemoveOrphans), nil)
 }
 
 func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {
@@ -393,20 +388,15 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	requiresBuild, inspection, err := s.composeRequiresBuild(r.Context(), project)
-	if err != nil {
-		respond(w, inspection, err)
-		return
-	}
 	cfg := s.currentConfig()
-	plan := docker.PreviewUpdate(project, requiresBuild, cfg.Update.RemoveOrphans)
+	plan := docker.PreviewUpdate(project, false, cfg.Update.RemoveOrphans)
 	if !plan.CanDeploy {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(plan)
 		return
 	}
 	results := []docker.Result{}
-	for _, cmd := range docker.UpdateCommands(project, requiresBuild, cfg.Update.RemoveOrphans) {
+	for _, cmd := range docker.UpdateCommands(project, false, cfg.Update.RemoveOrphans) {
 		result, err := s.executeRecorded(r.Context(), cmd, "project", project.ID, project.Name, "deploy")
 		results = append(results, result)
 		if err != nil {
@@ -536,19 +526,8 @@ func (s *Server) deployContainerService(w http.ResponseWriter, r *http.Request) 
 		badRequest(w, errText("container updates require a Compose-managed service"))
 		return
 	}
-	inspection, inspectErr := s.execute(r.Context(), docker.ComposeConfigCommand(project))
-	if inspectErr != nil {
-		respond(w, inspection, inspectErr)
-		return
-	}
-	requiresBuild, err := docker.ComposeServiceRequiresBuild(inspection.Output, service.Name)
-	if err != nil {
-		inspection.Error = err.Error()
-		respond(w, inspection, err)
-		return
-	}
 	results := make([]docker.Result, 0, 3)
-	for _, cmd := range docker.ServiceUpdateCommands(project, service.Name, requiresBuild) {
+	for _, cmd := range docker.ServiceUpdateCommands(project, service.Name, false) {
 		result, execErr := s.executeRecorded(r.Context(), cmd, "container", containerID, service.Name, "deploy")
 		results = append(results, result)
 		if execErr != nil {
@@ -1101,21 +1080,6 @@ func (s *Server) findProject(id string) (core.Project, bool, error) {
 		}
 	}
 	return core.Project{}, false, nil
-}
-
-func (s *Server) composeRequiresBuild(ctx context.Context, project core.Project) (bool, docker.Result, error) {
-	if project.Type != core.ProjectTypeCompose || len(project.ConfigFiles) == 0 {
-		return false, docker.Result{}, nil
-	}
-	result, err := s.execute(ctx, docker.ComposeConfigCommand(project))
-	if err != nil {
-		return false, result, err
-	}
-	requiresBuild, err := docker.ComposeConfigRequiresBuild(result.Output)
-	if err != nil {
-		return false, result, fmt.Errorf("parse compose config: %w", err)
-	}
-	return requiresBuild, result, nil
 }
 
 func respond(w http.ResponseWriter, value any, err error) {
