@@ -235,7 +235,7 @@ func TestCommandsForPlanPreserveWorkingDir(t *testing.T) {
 
 func TestUpdateCommandsKeepPathWithSpacesAsSingleArg(t *testing.T) {
 	project := core.Project{Type: core.ProjectTypeCompose, WorkingDir: "/srv/photo tree", ConfigFiles: []string{"/srv/photo tree/compose.yml"}}
-	commands := UpdateCommands(project, false, false)
+	commands := UpdateCommands(project, true, false)
 	if len(commands) != 2 {
 		t.Fatalf("commands len = %d", len(commands))
 	}
@@ -252,7 +252,6 @@ func TestServiceUpdateCommandsTargetOnlySelectedComposeService(t *testing.T) {
 	commands := ServiceUpdateCommands(project, " web ", true)
 	want := []Command{
 		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "--progress", "json", "pull", "web"}, Dir: "/srv/photo tree"},
-		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "build", "web"}, Dir: "/srv/photo tree"},
 		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "up", "-d", "--no-deps", "web"}, Dir: "/srv/photo tree"},
 	}
 	if !reflect.DeepEqual(commands, want) {

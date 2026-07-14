@@ -6,7 +6,7 @@ import (
 	"dockertree/internal/core"
 )
 
-func TestPreviewUpdateBuildsConservativeComposePlan(t *testing.T) {
+func TestPreviewUpdateDoesNotBuildComposeServicesAutomatically(t *testing.T) {
 	project := core.Project{
 		ID:          "compose:phototree",
 		Name:        "phototree",
@@ -18,13 +18,15 @@ func TestPreviewUpdateBuildsConservativeComposePlan(t *testing.T) {
 
 	plan := PreviewUpdate(project, true, false)
 
-	if !plan.CanDeploy || !plan.RequiresBuild {
+	if !plan.CanDeploy || plan.RequiresBuild {
 		t.Fatalf("unexpected flags: %#v", plan)
 	}
 	want := []string{
 		"docker compose -f /srv/phototree/docker-compose.yml --progress json pull",
-		"docker compose -f /srv/phototree/docker-compose.yml build",
 		"docker compose -f /srv/phototree/docker-compose.yml up -d",
+	}
+	if len(plan.Commands) != len(want) {
+		t.Fatalf("commands = %#v, want %#v", plan.Commands, want)
 	}
 	for i := range want {
 		if plan.Commands[i] != want[i] {

@@ -312,7 +312,7 @@ func TestProjectMetadataEndpointRejectsOverlongItems(t *testing.T) {
 	}
 }
 
-func TestPreviewUpdateUsesComposeBuildConfiguration(t *testing.T) {
+func TestPreviewUpdateDoesNotInspectOrBuildComposeConfiguration(t *testing.T) {
 	project := core.Project{
 		ID:          "compose:app",
 		Name:        "app",
@@ -321,10 +321,7 @@ func TestPreviewUpdateUsesComposeBuildConfiguration(t *testing.T) {
 		ConfigFiles: []string{"/srv/app/compose.yml"},
 		Services:    []core.Service{{Name: "api", Image: "registry/app:dev"}},
 	}
-	configCommand := "docker compose -f /srv/app/compose.yml config --format json"
-	exec := &fakeExecutor{outputs: map[string]string{
-		configCommand: `{"services":{"api":{"image":"registry/app:dev","build":{"context":"."}}}}`,
-	}}
+	exec := &fakeExecutor{err: errors.New("compose config must not run")}
 	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, exec).Handler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/compose:app/actions/preview-update", nil)
@@ -332,52 +329,11 @@ func TestPreviewUpdateUsesComposeBuildConfiguration(t *testing.T) {
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, req)
 
-	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), `"requiresBuild":true`) || !strings.Contains(r.Body.String(), "docker compose -f /srv/app/compose.yml build") {
+	if r.Code != http.StatusOK || strings.Contains(r.Body.String(), `"requiresBuild":true`) || strings.Contains(r.Body.String(), " build") {
 		t.Fatalf("preview status=%d body=%s", r.Code, r.Body.String())
 	}
-	if len(exec.commands) != 1 || exec.commands[0] != configCommand {
+	if len(exec.commands) != 0 {
 		t.Fatalf("commands=%#v", exec.commands)
-	}
-}
-
-func TestPreviewUpdateReturnsComposeInspectionErrors(t *testing.T) {
-	project := core.Project{
-		ID:          "compose:app",
-		Name:        "app",
-		Type:        core.ProjectTypeCompose,
-		WorkingDir:  "/srv/app",
-		ConfigFiles: []string{"/srv/app/compose.yml"},
-	}
-	configCommand := "docker compose -f /srv/app/compose.yml config --format json"
-	tests := []struct {
-		name     string
-		exec     *fakeExecutor
-		wantText string
-	}{
-		{
-			name:     "command failure",
-			exec:     &fakeExecutor{err: errors.New("compose config failed"), failCall: 1},
-			wantText: "compose config failed",
-		},
-		{
-			name: "invalid json",
-			exec: &fakeExecutor{outputs: map[string]string{
-				configCommand: "not-json",
-			}},
-			wantText: "parse compose config",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, tt.exec).Handler()
-			req := httptest.NewRequest(http.MethodPost, "/api/projects/compose:app/actions/preview-update", nil)
-			req.Header.Set("Authorization", "Bearer secret")
-			r := httptest.NewRecorder()
-			h.ServeHTTP(r, req)
-			if r.Code != http.StatusInternalServerError || !strings.Contains(r.Body.String(), tt.wantText) || !strings.Contains(r.Body.String(), configCommand) {
-				t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
-			}
-		})
 	}
 }
 
@@ -496,10 +452,7 @@ func TestDeployExecutesConservativeComposeCommands(t *testing.T) {
 		ConfigFiles: []string{"/srv/mtp/docker-compose.yml"},
 		Services:    []core.Service{{Name: "app", Image: "mtp-app"}},
 	}}}
-	configCommand := "docker compose -f /srv/mtp/docker-compose.yml config --format json"
-	exec := &fakeExecutor{outputs: map[string]string{
-		configCommand: `{"services":{"app":{"image":"mtp-app","build":{"context":"."}}}}`,
-	}}
+	exec := &fakeExecutor{}
 	h := New(config.Config{AdminToken: "secret"}, inv, fakeScanner{}, exec).Handler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/compose:mtp/actions/deploy", nil)
@@ -511,9 +464,7 @@ func TestDeployExecutesConservativeComposeCommands(t *testing.T) {
 		t.Fatalf("status = %d body=%s", r.Code, r.Body.String())
 	}
 	want := []string{
-		configCommand,
 		"docker compose -f /srv/mtp/docker-compose.yml --progress json pull",
-		"docker compose -f /srv/mtp/docker-compose.yml build",
 		"docker compose -f /srv/mtp/docker-compose.yml up -d",
 	}
 	if strings.Join(exec.commands, "\n") != strings.Join(want, "\n") {
@@ -749,11 +700,9 @@ func TestContainerUpdateCheckAndDeployTargetOnlySelectedComposeService(t *testin
 			{Name: "worker", ContainerID: "worker456", Image: "registry/worker:latest"},
 		},
 	}
-	configCommand := "docker compose -f /srv/app/compose.yml config --format json"
 	checkCommand := "docker compose -f /srv/app/compose.yml --dry-run pull web"
 	exec := &fakeExecutor{outputs: map[string]string{
-		configCommand: `{"services":{"web":{"image":"registry/web:latest","build":{"context":"."}},"worker":{"image":"registry/worker:latest"}}}`,
-		checkCommand:  "DRY-RUN MODE - web Pulled",
+		checkCommand: "DRY-RUN MODE - web Pulled",
 	}}
 	inv := &fakeInventory{projects: []core.Project{project}}
 	scanner := fakeScanner{projects: []core.Project{project}}
@@ -776,9 +725,7 @@ func TestContainerUpdateCheckAndDeployTargetOnlySelectedComposeService(t *testin
 	}
 	want := []string{
 		checkCommand,
-		configCommand,
 		"docker compose -f /srv/app/compose.yml --progress json pull web",
-		"docker compose -f /srv/app/compose.yml build web",
 		"docker compose -f /srv/app/compose.yml up -d --no-deps web",
 	}
 	if !reflect.DeepEqual(exec.commands, want) {
@@ -887,32 +834,9 @@ func TestContainerUpdateEndpointsReturnUsefulFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("compose inspection failure", func(t *testing.T) {
-		exec := &fakeExecutor{err: errors.New("config failed"), failCall: 1}
-		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, exec).Handler()
-		r := httptest.NewRecorder()
-		h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/web123/actions/deploy"))
-		if r.Code != http.StatusInternalServerError || !strings.Contains(r.Body.String(), "config failed") {
-			t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
-		}
-	})
-
-	t.Run("service missing from compose config", func(t *testing.T) {
-		exec := &fakeExecutor{outputs: map[string]string{
-			"docker compose -f /srv/app/compose.yml config --format json": `{"services":{"other":{"image":"busybox"}}}`,
-		}}
-		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, exec).Handler()
-		r := httptest.NewRecorder()
-		h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/web123/actions/deploy"))
-		if r.Code != http.StatusInternalServerError || !strings.Contains(r.Body.String(), `compose service \"web\" was not found`) {
-			t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
-		}
-	})
-
 	t.Run("service deploy command failure", func(t *testing.T) {
 		exec := &fakeExecutor{
-			err: errors.New("pull failed"), failCall: 2,
-			outputs: map[string]string{"docker compose -f /srv/app/compose.yml config --format json": `{"services":{"web":{"image":"registry/web:latest"}}}`},
+			err: errors.New("pull failed"), failCall: 1,
 		}
 		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, exec).Handler()
 		r := httptest.NewRecorder()
@@ -923,9 +847,7 @@ func TestContainerUpdateEndpointsReturnUsefulFailures(t *testing.T) {
 	})
 
 	t.Run("inventory refresh failure", func(t *testing.T) {
-		exec := &fakeExecutor{outputs: map[string]string{
-			"docker compose -f /srv/app/compose.yml config --format json": `{"services":{"web":{"image":"registry/web:latest"}}}`,
-		}}
+		exec := &fakeExecutor{}
 		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{err: errors.New("refresh failed")}, exec).Handler()
 		r := httptest.NewRecorder()
 		h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/web123/actions/deploy"))
