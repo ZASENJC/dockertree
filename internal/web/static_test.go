@@ -895,11 +895,21 @@ func TestMobileImageLayoutConstrainsLongImageNames(t *testing.T) {
 }
 
 func TestOperationRequestsRenderStreamingOutputInRealTime(t *testing.T) {
+	indexData, err := Assets.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
 	appData, err := Assets.ReadFile("static/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
+	html := string(indexData)
 	js := string(appData)
+	for _, want := range []string{`<progress id="operationProgressBar"`, `id="operationProgressSummary"`, `id="operationProgressDetail"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("native operation progress UI missing %q", want)
+		}
+	}
 	for _, want := range []string{
 		"application/x-ndjson",
 		"res.body.getReader()",
@@ -909,6 +919,9 @@ func TestOperationRequestsRenderStreamingOutputInRealTime(t *testing.T) {
 		"method !== 'GET'",
 		"event.type === 'command'",
 		"event.type === 'output'",
+		"event.type === 'progress'",
+		"updateOperationProgress(event.progress)",
+		"operationProgressBar.value",
 		"operationOutput.scrollTop = operationOutput.scrollHeight",
 	} {
 		if !strings.Contains(js, want) {

@@ -22,7 +22,7 @@ func TestPreviewUpdateBuildsConservativeComposePlan(t *testing.T) {
 		t.Fatalf("unexpected flags: %#v", plan)
 	}
 	want := []string{
-		"docker compose -f /srv/phototree/docker-compose.yml pull",
+		"docker compose -f /srv/phototree/docker-compose.yml --progress json pull",
 		"docker compose -f /srv/phototree/docker-compose.yml build",
 		"docker compose -f /srv/phototree/docker-compose.yml up -d",
 	}
@@ -43,7 +43,7 @@ func TestPreviewUpdateQuotesComposePathsWithSpaces(t *testing.T) {
 	}
 
 	plan := PreviewUpdate(project, false, true)
-	if plan.Commands[0] != "docker compose -f '/srv/photo tree/docker-compose.yml' pull" {
+	if plan.Commands[0] != "docker compose -f '/srv/photo tree/docker-compose.yml' --progress json pull" {
 		t.Fatalf("unexpected quoted command: %q", plan.Commands[0])
 	}
 	if plan.Commands[1] != "docker compose -f '/srv/photo tree/docker-compose.yml' up -d --remove-orphans" {

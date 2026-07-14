@@ -24,6 +24,31 @@ type streamingFakeExecutor struct {
 	release chan struct{}
 }
 
+type progressStreamingExecutor struct {
+	fakeExecutor
+}
+
+func (f *progressStreamingExecutor) ExecuteStream(_ context.Context, cmd docker.Command, emit func([]byte)) (docker.Result, error) {
+	f.commands = append(f.commands, cmd.String())
+	if strings.HasSuffix(cmd.String(), " config --format json") {
+		output := `{"services":{"app":{"image":"registry/app:latest"}}}`
+		emit([]byte(output))
+		return docker.Result{Command: cmd.String(), Output: output}, nil
+	}
+	if strings.Contains(cmd.String(), " --progress json pull") {
+		output := strings.Join([]string{
+			`{"id":"Image registry/app:latest","status":"Working","text":"Pulling"}`,
+			`{"id":"Image registry/app:latest","status":"Done","text":"Pulled"}`,
+		}, "\n") + "\n"
+		split := strings.Index(output, `"status":"Done"`) - 4
+		emit([]byte(output[:split]))
+		emit([]byte(output[split:]))
+		return docker.Result{Command: cmd.String(), Output: output}, nil
+	}
+	emit([]byte("done\n"))
+	return docker.Result{Command: cmd.String(), Output: "done\n"}, nil
+}
+
 func (f *streamingFakeExecutor) Execute(_ context.Context, cmd docker.Command) (docker.Result, error) {
 	<-f.release
 	return docker.Result{Command: cmd.String(), Output: "pulling\ndone\n"}, nil
@@ -487,7 +512,7 @@ func TestDeployExecutesConservativeComposeCommands(t *testing.T) {
 	}
 	want := []string{
 		configCommand,
-		"docker compose -f /srv/mtp/docker-compose.yml pull",
+		"docker compose -f /srv/mtp/docker-compose.yml --progress json pull",
 		"docker compose -f /srv/mtp/docker-compose.yml build",
 		"docker compose -f /srv/mtp/docker-compose.yml up -d",
 	}
@@ -752,7 +777,7 @@ func TestContainerUpdateCheckAndDeployTargetOnlySelectedComposeService(t *testin
 	want := []string{
 		checkCommand,
 		configCommand,
-		"docker compose -f /srv/app/compose.yml pull web",
+		"docker compose -f /srv/app/compose.yml --progress json pull web",
 		"docker compose -f /srv/app/compose.yml build web",
 		"docker compose -f /srv/app/compose.yml up -d --no-deps web",
 	}
@@ -761,6 +786,43 @@ func TestContainerUpdateCheckAndDeployTargetOnlySelectedComposeService(t *testin
 	}
 	if inv.saves != 1 {
 		t.Fatalf("inventory saves=%d", inv.saves)
+	}
+}
+
+func TestComposePullStreamUsesProgressEventsWithoutRawJSONOutput(t *testing.T) {
+	project := core.Project{
+		ID:          "compose:app",
+		Name:        "app",
+		Type:        core.ProjectTypeCompose,
+		WorkingDir:  "/srv/app",
+		ConfigFiles: []string{"/srv/app/compose.yml"},
+		Services:    []core.Service{{Name: "app", Image: "registry/app:latest"}},
+	}
+	exec := &progressStreamingExecutor{}
+	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{projects: []core.Project{project}}, exec).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/compose:app/actions/deploy", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Accept", "application/x-ndjson")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+
+	body := r.Body.String()
+	if r.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", r.Code, body)
+	}
+	for _, want := range []string{
+		`"type":"progress"`,
+		`"id":"Image registry/app:latest"`,
+		`"status":"Done"`,
+		`"output":"镜像拉取完成：1/1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("progress stream missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"type":"output","data":"{\"id\":\"Image registry/app:latest`) {
+		t.Fatalf("raw Compose progress JSON must not be appended to operation logs: %s", body)
 	}
 }
 

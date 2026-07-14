@@ -242,7 +242,7 @@ func TestUpdateCommandsKeepPathWithSpacesAsSingleArg(t *testing.T) {
 	if commands[0].Args[2] != "/srv/photo tree/compose.yml" {
 		t.Fatalf("path was split or changed: %#v", commands[0].Args)
 	}
-	if commands[0].String() != "docker compose -f '/srv/photo tree/compose.yml' pull" {
+	if commands[0].String() != "docker compose -f '/srv/photo tree/compose.yml' --progress json pull" {
 		t.Fatalf("display command not quoted: %q", commands[0].String())
 	}
 }
@@ -251,7 +251,7 @@ func TestServiceUpdateCommandsTargetOnlySelectedComposeService(t *testing.T) {
 	project := core.Project{Type: core.ProjectTypeCompose, WorkingDir: "/srv/photo tree", ConfigFiles: []string{"/srv/photo tree/compose.yml"}}
 	commands := ServiceUpdateCommands(project, " web ", true)
 	want := []Command{
-		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "pull", "web"}, Dir: "/srv/photo tree"},
+		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "--progress", "json", "pull", "web"}, Dir: "/srv/photo tree"},
 		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "build", "web"}, Dir: "/srv/photo tree"},
 		{Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "up", "-d", "--no-deps", "web"}, Dir: "/srv/photo tree"},
 	}
