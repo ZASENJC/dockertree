@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -18,10 +19,17 @@ const operationStreamMediaType = "application/x-ndjson"
 type operationStreamContextKey struct{}
 
 type operationStreamEvent struct {
-	Type   string          `json:"type"`
-	Data   string          `json:"data,omitempty"`
-	Status int             `json:"status,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
+	Type     string             `json:"type"`
+	Data     string             `json:"data,omitempty"`
+	Progress *operationProgress `json:"progress,omitempty"`
+	Status   int                `json:"status,omitempty"`
+	Result   json.RawMessage    `json:"result,omitempty"`
+}
+
+type operationProgress struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Text   string `json:"text,omitempty"`
 }
 
 type operationStream struct {
@@ -87,13 +95,17 @@ func (s *Server) streamOperationResponse(w http.ResponseWriter, r *http.Request,
 func (s *Server) execute(ctx context.Context, cmd docker.Command) (docker.Result, error) {
 	stream := operationStreamFromContext(ctx)
 	if stream == nil {
-		return s.exec.Execute(ctx, cmd)
+		result, err := s.exec.Execute(ctx, cmd)
+		return compactComposeProgressResult(cmd, result), err
 	}
 	stream.emit(operationStreamEvent{Type: "command", Data: cmd.RedactedString()})
+	emitter := newOperationOutputEmitter(stream, isComposeJSONProgressCommand(cmd))
 	if streamingExec, ok := s.exec.(docker.StreamingExecutor); ok {
 		result, err := streamingExec.ExecuteStream(ctx, cmd, func(chunk []byte) {
-			stream.emit(operationStreamEvent{Type: "output", Data: string(chunk)})
+			emitter.emit(chunk)
 		})
+		emitter.flush()
+		result = compactComposeProgressResult(cmd, result)
 		if result.Error != "" {
 			stream.emit(operationStreamEvent{Type: "error", Data: result.Error})
 		}
@@ -101,12 +113,128 @@ func (s *Server) execute(ctx context.Context, cmd docker.Command) (docker.Result
 	}
 	result, err := s.exec.Execute(ctx, cmd)
 	if result.Output != "" {
-		stream.emit(operationStreamEvent{Type: "output", Data: result.Output})
+		emitter.emit([]byte(result.Output))
 	}
+	emitter.flush()
+	result = compactComposeProgressResult(cmd, result)
 	if result.Error != "" {
 		stream.emit(operationStreamEvent{Type: "error", Data: result.Error})
 	}
 	return result, err
+}
+
+type operationOutputEmitter struct {
+	stream   *operationStream
+	progress bool
+	pending  string
+}
+
+func newOperationOutputEmitter(stream *operationStream, progress bool) *operationOutputEmitter {
+	return &operationOutputEmitter{stream: stream, progress: progress}
+}
+
+func (e *operationOutputEmitter) emit(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	if !e.progress {
+		e.stream.emit(operationStreamEvent{Type: "output", Data: string(chunk)})
+		return
+	}
+	e.pending += string(chunk)
+	for {
+		newline := strings.IndexByte(e.pending, '\n')
+		if newline == -1 {
+			return
+		}
+		line := e.pending[:newline]
+		e.pending = e.pending[newline+1:]
+		e.emitLine(line, true)
+	}
+}
+
+func (e *operationOutputEmitter) flush() {
+	if !e.progress || e.pending == "" {
+		return
+	}
+	e.emitLine(e.pending, false)
+	e.pending = ""
+}
+
+func (e *operationOutputEmitter) emitLine(line string, newline bool) {
+	if progress, ok := parseComposeProgressLine(line); ok {
+		e.stream.emit(operationStreamEvent{Type: "progress", Progress: &progress})
+		return
+	}
+	if newline {
+		line += "\n"
+	}
+	if line != "" {
+		e.stream.emit(operationStreamEvent{Type: "output", Data: line})
+	}
+}
+
+func isComposeJSONProgressCommand(cmd docker.Command) bool {
+	if cmd.Name != "docker" || len(cmd.Args) == 0 || cmd.Args[0] != "compose" {
+		return false
+	}
+	hasJSONProgress := false
+	hasPull := false
+	for i, arg := range cmd.Args {
+		if arg == "--progress" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "json" {
+			hasJSONProgress = true
+		}
+		if arg == "pull" {
+			hasPull = true
+		}
+	}
+	return hasJSONProgress && hasPull
+}
+
+func parseComposeProgressLine(line string) (operationProgress, bool) {
+	var progress operationProgress
+	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &progress); err != nil {
+		return operationProgress{}, false
+	}
+	if progress.Status == "" || (progress.ID == "" && progress.Text == "") {
+		return operationProgress{}, false
+	}
+	if progress.ID == "" {
+		progress.ID = progress.Text
+	}
+	return progress, true
+}
+
+func compactComposeProgressResult(cmd docker.Command, result docker.Result) docker.Result {
+	if !isComposeJSONProgressCommand(cmd) || result.Output == "" {
+		return result
+	}
+	progressByID := map[string]operationProgress{}
+	plainLines := make([]string, 0)
+	for _, line := range strings.Split(result.Output, "\n") {
+		if progress, ok := parseComposeProgressLine(line); ok {
+			progressByID[progress.ID] = progress
+			continue
+		}
+		if strings.TrimSpace(line) != "" {
+			plainLines = append(plainLines, line)
+		}
+	}
+	if len(progressByID) == 0 {
+		return result
+	}
+	done := 0
+	for _, progress := range progressByID {
+		if strings.EqualFold(progress.Status, "done") {
+			done++
+		}
+	}
+	summary := fmt.Sprintf("镜像拉取进度：%d/%d", done, len(progressByID))
+	if done == len(progressByID) {
+		summary = fmt.Sprintf("镜像拉取完成：%d/%d", done, len(progressByID))
+	}
+	result.Output = strings.Join(append([]string{summary}, plainLines...), "\n")
+	return result
 }
 
 func (s *Server) checkUpdate(ctx context.Context, project core.Project) (core.UpdateCheck, error) {

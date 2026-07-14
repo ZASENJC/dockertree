@@ -42,6 +42,11 @@ const imagePaginationEl = document.querySelector('#imagePagination');
 const imageSearchPaginationEl = document.querySelector('#imageSearchPagination');
 const deployOutput = document.querySelector('#deployOutput');
 const operationOutput = document.querySelector('#operationOutput');
+const operationProgress = document.querySelector('#operationProgress');
+const operationProgressBar = document.querySelector('#operationProgressBar');
+const operationProgressSummary = document.querySelector('#operationProgressSummary');
+const operationProgressDetail = document.querySelector('#operationProgressDetail');
+const operationProgressTasks = new Map();
 const filterBar = document.querySelector('#filterBar');
 const globalSearch = document.querySelector('#globalSearch');
 const statusFilter = document.querySelector('#statusFilter');
@@ -622,6 +627,7 @@ async function api(path, options = {}) {
 }
 
 async function apiOperation(path, options, method) {
+  resetOperationProgress();
   operationOutput.textContent = `${method} ${path}\n正在连接操作日志...\n`;
   operationOutput.scrollTop = operationOutput.scrollHeight;
   const res = await fetch(path, {
@@ -647,6 +653,7 @@ async function readOperationStream(res, method, path) {
   let pending = '';
   let result;
   let resultStatus = 0;
+  resetOperationProgress();
   operationOutput.textContent = `${method} ${path}\n`;
 
   const consume = (line) => {
@@ -658,11 +665,14 @@ async function readOperationStream(res, method, path) {
       appendOperationOutput(`\n$ ${event.data}\n`);
     } else if (event.type === 'output') {
       appendOperationOutput(event.data || '');
+    } else if (event.type === 'progress') {
+      updateOperationProgress(event.progress);
     } else if (event.type === 'error') {
       appendOperationOutput(`\nerror: ${event.data}\n`);
     } else if (event.type === 'result') {
       result = event.result;
       resultStatus = event.status || 200;
+      finishOperationProgress(resultStatus < 400);
       appendOperationOutput(resultStatus < 400 ? '\n操作完成。\n' : '\n操作失败。\n');
     }
   };
@@ -677,12 +687,48 @@ async function readOperationStream(res, method, path) {
   }
   if (pending) consume(pending);
   if (!resultStatus) {
+    finishOperationProgress(false);
     throw new Error('操作日志流在返回结果前意外结束。');
   }
   if (resultStatus >= 400) {
     throw new Error(JSON.stringify(result));
   }
   return result;
+}
+
+function resetOperationProgress() {
+  operationProgressTasks.clear();
+  operationProgress.classList.add('hidden');
+  operationProgressBar.max = 1;
+  operationProgressBar.removeAttribute('value');
+  operationProgressSummary.textContent = '镜像拉取准备中';
+  operationProgressDetail.textContent = '';
+}
+
+function updateOperationProgress(progress) {
+  if (!progress) return;
+  const id = progress.id || progress.text || '镜像拉取任务';
+  operationProgressTasks.set(id, progress);
+  const tasks = [...operationProgressTasks.values()];
+  const completed = tasks.filter((task) => ['done', 'error', 'warning'].includes(String(task.status || '').toLowerCase())).length;
+  const failed = tasks.filter((task) => String(task.status || '').toLowerCase() === 'error').length;
+  operationProgress.classList.remove('hidden');
+  operationProgressBar.max = Math.max(tasks.length, 1);
+  operationProgressBar.value = completed;
+  operationProgressSummary.textContent = failed
+    ? `镜像拉取 ${completed}/${tasks.length}，${failed} 个失败`
+    : `镜像拉取 ${completed}/${tasks.length}`;
+  const label = id.replace(/^Image\s+/, '');
+  operationProgressDetail.textContent = [label, progress.text || progress.status].filter(Boolean).join(' · ');
+}
+
+function finishOperationProgress(success) {
+  if (operationProgress.classList.contains('hidden')) return;
+  const total = Math.max(operationProgressTasks.size, 1);
+  if (success) operationProgressBar.value = total;
+  operationProgressSummary.textContent = success
+    ? `镜像拉取完成 ${operationProgressTasks.size}/${operationProgressTasks.size}`
+    : '镜像拉取失败';
 }
 
 function appendOperationOutput(text) {

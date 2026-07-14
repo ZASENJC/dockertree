@@ -347,9 +347,49 @@ button.danger {
   min-height: calc(100vh - 164px);
 }
 
+.operation-console {
+  margin-top: 16px;
+}
+
+.operation-progress {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: var(--pre-bg);
+  color: var(--pre-ink);
+}
+
+.operation-progress-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.operation-progress-heading span {
+  min-width: 0;
+  flex: 1 1 260px;
+  color: var(--pre-ink);
+  font-size: 12px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.operation-progress progress {
+  width: 100%;
+  height: 14px;
+  accent-color: var(--accent);
+}
+
 .operation-output {
   min-height: 72px;
-  margin-top: 16px;
+}
+
+.operation-progress:not(.hidden) + .operation-output {
+  border-top: 0;
 }
 
 .view-panel {

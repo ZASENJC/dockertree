@@ -302,7 +302,8 @@ func UpdateCommands(project core.Project, requiresBuild bool, removeOrphans bool
 		return nil
 	}
 	base := composeArgs(project.ConfigFiles)
-	commands := []Command{{Name: "docker", Args: append(append([]string{}, base...), "pull"), Dir: project.WorkingDir}}
+	pullArgs := append(append([]string{}, base...), "--progress", "json", "pull")
+	commands := []Command{{Name: "docker", Args: pullArgs, Dir: project.WorkingDir}}
 	if requiresBuild {
 		commands = append(commands, Command{Name: "docker", Args: append(append([]string{}, base...), "build"), Dir: project.WorkingDir})
 	}
@@ -333,7 +334,8 @@ func ServiceUpdateCommands(project core.Project, service string, requiresBuild b
 		return nil
 	}
 	base := composeArgs(project.ConfigFiles)
-	commands := []Command{{Name: "docker", Args: append(append([]string{}, base...), "pull", service), Dir: project.WorkingDir}}
+	pullArgs := append(append([]string{}, base...), "--progress", "json", "pull", service)
+	commands := []Command{{Name: "docker", Args: pullArgs, Dir: project.WorkingDir}}
 	if requiresBuild {
 		commands = append(commands, Command{Name: "docker", Args: append(append([]string{}, base...), "build", service), Dir: project.WorkingDir})
 	}
