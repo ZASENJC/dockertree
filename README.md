@@ -56,7 +56,7 @@ chmod 755 dockertree.sh
 
 默认二进制文件路径为 `~/.local/bin/dockertree`，运行日志和 PID 文件存储在 `~/.local/state/dockertree/` 下。新安装会创建默认监听 `0.0.0.0:27680` 的配置。普通卸载会保留 `~/.config/dockertree/`。如需删除二进制文件、运行时文件和全部 Dockertree 配置，请执行 `./dockertree.sh uninstall --purge --yes`。
 
-`install` 和 `start` 会自动注册设备重启后的启动任务：Linux 使用系统级 `/etc/systemd/system/dockertree.service`，并以执行安装的普通用户身份运行 Dockertree，因此不依赖登录会话或用户级 D-Bus；安装 unit 和执行 `systemctl enable` 时可能要求输入 `sudo` 密码。macOS 使用 `~/Library/LaunchAgents/io.github.zasenjc.dockertree.plist`，在用户登录后自动启动。Docker 尚未就绪时，两种任务都会延迟后重试。`uninstall` 会同时禁用并删除这些自启动配置。请使用普通用户执行管理脚本，不要对整个脚本使用 `sudo`。
+`install` 和 `start` 会自动注册设备重启后的启动任务：Linux 使用系统级 `/etc/systemd/system/dockertree.service`，并以执行安装的普通用户身份运行 Dockertree，因此不依赖登录会话或用户级 D-Bus；安装 unit 和执行 `systemctl enable` 时可能要求输入 `sudo` 密码。macOS 使用 `~/Library/LaunchAgents/io.github.zasenjc.dockertree.plist`，在用户登录后自动启动。两种任务都会以前台托管方式持续跟踪 Dockertree；即使 Docker 尚未就绪，控制台也会先启动，并在 Docker 可用后正常扫描。`uninstall` 会同时禁用并删除这些自启动配置。请使用普通用户执行管理脚本，不要对整个脚本使用 `sudo`。
 
 管理脚本放在 `/opt` 等普通用户不可写目录时，安装和更新会先在用户状态目录暂存新版脚本，仅在替换管理脚本文件时请求 `sudo`。不要使用 `sudo ./dockertree.sh install`、`update`、`start` 或 `restart`，否则程序和配置会落到 `/root`；脚本会主动拒绝这些调用。为迁移旧的 root 安装，可以先执行 `sudo ./dockertree.sh stop` 和 `sudo ./dockertree.sh uninstall`，再以普通用户重新执行 `./dockertree.sh install` 和 `./dockertree.sh start`。
 

@@ -20,6 +20,7 @@ CONFIG_DIR=${DOCKERTREE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/dockertree
 BINARY=$INSTALL_DIR/dockertree
 PID_FILE=$STATE_DIR/dockertree.pid
 LOG_FILE=$STATE_DIR/dockertree.log
+STOP_FILE=$STATE_DIR/dockertree.stop
 SYSTEMD_UNIT_DIR=${DOCKERTREE_SYSTEMD_UNIT_DIR:-/etc/systemd/system}
 SYSTEMD_UNIT_FILE=$SYSTEMD_UNIT_DIR/dockertree.service
 LEGACY_SYSTEMD_UNIT_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/dockertree.service
@@ -547,7 +548,7 @@ Wants=docker.service
 After=docker.service
 
 [Service]
-Type=oneshot
+Type=simple
 User=$service_user
 Environment="HOME=$home_value"
 Environment="DOCKERTREE_INSTALL_DIR=$install_value"
@@ -556,9 +557,8 @@ Environment="DOCKERTREE_CONFIG_DIR=$config_value"
 Environment="DOCKERTREE_AUTO_INSTALL=0"
 Environment="DOCKERTREE_AUTOSTART_CONTEXT=1"
 Environment="PATH=$path_value"
-ExecStart="$manager_value" start
+ExecStart="$manager_value" run
 ExecStop="$manager_value" stop
-RemainAfterExit=yes
 Restart=on-failure
 RestartSec=10
 
@@ -615,7 +615,7 @@ install_launchd_autostart() {
   <key>ProgramArguments</key>
   <array>
     <string>$manager_value</string>
-    <string>start</string>
+    <string>run</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -822,6 +822,7 @@ start_app() {
   require_docker_access || return 1
 
   mkdir -p "$STATE_DIR" "$CONFIG_DIR" || fail "无法创建运行目录"
+  rm -f "$STOP_FILE"
   log_line=$(sed -n '$=' "$LOG_FILE" 2>/dev/null)
   log_line=${log_line:-0}
   log_start=$((log_line + 1))
@@ -863,6 +864,54 @@ start_app() {
   show_access_details "$log_start"
 }
 
+run_app() {
+  if [ ! -x "$BINARY" ]; then
+    fail "尚未安装，请先运行 '$0 install'"
+  fi
+  if pid=$(running_pid); then
+    echo "Dockertree 已在运行，PID: $pid"
+    return 0
+  fi
+
+  mkdir -p "$STATE_DIR" "$CONFIG_DIR" || fail "无法创建运行目录"
+  rm -f "$STOP_FILE"
+  touch "$LOG_FILE" || fail "无法写入日志: $LOG_FILE"
+  chmod 600 "$LOG_FILE" 2>/dev/null || true
+
+  env DOCKERTREE_CONFIG_DIR="$CONFIG_DIR" "$BINARY" >>"$LOG_FILE" 2>&1 &
+  pid=$!
+  printf '%s\n' "$pid" >"$PID_FILE" || fail "无法写入 PID 文件"
+  chmod 600 "$PID_FILE" 2>/dev/null || true
+
+  stop_managed_process() {
+    touch "$STOP_FILE" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  }
+  trap stop_managed_process HUP INT TERM
+
+  wait "$pid"
+  status=$?
+  while kill -0 "$pid" 2>/dev/null; do
+    wait "$pid"
+    status=$?
+  done
+  trap - HUP INT TERM
+
+  intentional_stop=false
+  if [ -f "$STOP_FILE" ]; then
+    intentional_stop=true
+    rm -f "$STOP_FILE"
+  fi
+  recorded_pid=$(sed -n '1p' "$PID_FILE" 2>/dev/null)
+  if [ "$recorded_pid" = "$pid" ]; then
+    rm -f "$PID_FILE"
+  fi
+  if [ "$intentional_stop" = true ]; then
+    return 0
+  fi
+  return "$status"
+}
+
 stop_app() {
   validate_timeout DOCKERTREE_STOP_TIMEOUT "$STOP_TIMEOUT"
   if ! pid=$(running_pid); then
@@ -870,6 +919,7 @@ stop_app() {
     return 0
   fi
 
+  touch "$STOP_FILE" || fail "无法记录停止请求"
   if ! kill "$pid" 2>/dev/null; then
     rm -f "$PID_FILE"
     fail "无法停止 PID $pid"
@@ -933,7 +983,7 @@ uninstall_app() {
 
   stop_app || return $?
   remove_autostart || fail "删除自动启动配置失败"
-  rm -f "$BINARY" "$PID_FILE" "$LOG_FILE" || fail "卸载文件失败"
+  rm -f "$BINARY" "$PID_FILE" "$LOG_FILE" "$STOP_FILE" || fail "卸载文件失败"
   rmdir "$STATE_DIR" 2>/dev/null || true
 
   if [ "$purge" = true ]; then
@@ -985,6 +1035,13 @@ case "$command" in
       exit 2
     fi
     start_app
+    ;;
+  run)
+    if [ "$#" -ne 1 ]; then
+      echo "错误: run 不接受选项。" >&2
+      exit 2
+    fi
+    run_app
     ;;
   stop)
     if [ "$#" -ne 1 ]; then
