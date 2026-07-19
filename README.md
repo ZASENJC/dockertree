@@ -1,36 +1,44 @@
 # Dockertree
 
-Dockertree 是一个用于管理 Docker 和 Docker Compose 项目的轻量级本地 Web 控制台。它以单个 Go 进程运行，使用 YAML 文件保存长期配置，并会索引现有的 Compose 项目位置，不会移动或改写项目文件。
+Dockertree 是一个运行在本机的 Docker / Docker Compose Web 管理台。它以单个 Go 进程运行，可以自动发现现有容器和 Compose 项目，并通过中文界面完成查看、部署、更新、日志检查和安全清理。
 
-## 功能特性
+Dockertree 不会在扫描时移动或改写已有 Compose 文件。配置、项目索引、部署模板和操作历史默认保存在 `~/.config/dockertree/`，便于备份和迁移。
 
-- 通过 `docker compose ls` 和 Docker Compose 容器标签自动发现现有的 Compose 项目。
-- 可在 `项目` 页面配置新建项目根目录和附加扫描目录，保存后立即递归扫描其中的 Compose 文件；新安装默认使用 `/opt`。
-- 可从已发现项目的 Compose 文件列表进入编辑器，文件继续保留在原目录，不会因扫描或编辑而被迁移。
-- 对没有 Compose 标签的独立 Docker 容器单独进行管理。
-- 默认将可迁移的配置和清单存储在 `~/.config/dockertree/` 下。
-- 默认在 `0.0.0.0:27680` 提供简洁的内置 Web UI，并通过令牌保护 API 访问。
-- 部署前提供保守的更新预览：依次执行 `pull` 和 `up -d`，不会隐式重新构建本地镜像。
-- 支持两种新服务部署方式：搜索镜像名称并通过 `docker run` 部署，或按项目名称自动创建 Compose 项目目录，并选择仅保存配置或保存后执行 `docker compose up -d`。
-- 列出本地已下载的 Docker 镜像，并可将其复用于镜像部署。
-- 容器、Compose 项目和镜像/部署采用点击切换的独立页面。
-- 提供运行概览，包括项目、容器和镜像数量，需要关注的已停止或不健康项目，以及按需获取的 Docker 资源快照。
-- 支持全局搜索、状态/健康状况/类型/标签/收藏筛选、排序，以及持久化保存项目收藏、标签和别名。
-- 在详情中显示容器健康状况和挂载信息，并提供可配置的项目/容器日志查看器，支持服务、尾部行数、时间戳、关键词和刷新选项。
-- 支持仅在页面可见时按 30 秒、60 秒或 5 分钟自动刷新；设置保存在浏览器中，默认关闭。
-- 将脱敏后的 Docker 操作历史持久化到 `logs/operations.jsonl`，并可在 Web UI 中按目标和失败状态筛选。
-- 安全查看容器的重启策略、网络、创建时间和挂载信息，不返回容器环境变量。
-- 支持项目服务链接、本地部署模板、更新检查、可选的定时 Webhook/ntfy 通知，以及 YAML 配置备份与恢复。
-- 提供保守的清理中心，可清理选中的已停止容器、悬空镜像和未使用的自定义网络；绝不会执行 `docker system prune` 或删除数据卷。
-- 支持高级镜像部署，可配置并校验端口、环境变量、挂载、网络和重启策略。
-- 在内存中校验并规范化 Compose YAML，覆盖前显示当前内容和规范化后的内容，并拒绝写入预览后发生变化的文件。
-- 支持保守删除：删除容器、对项目执行 Compose `down`（不删除数据卷），以及删除本地镜像。
-- Web 前端全局采用直角、无圆角样式。
-- 支持浅色/深色模式切换，并将偏好保存在浏览器中。
+## 适合哪些场景
 
-## 脚本管理
+- 在 Linux 服务器或 macOS 上集中查看本机 Docker 状态。
+- 管理散落在不同目录中的 Compose 项目。
+- 通过浏览器查看容器日志、健康状态、挂载和资源占用。
+- 在实际执行前预览镜像部署、Compose 部署、更新和清理操作。
+- 使用一个轻量级本地工具替代复杂的多服务管理平台。
 
-Dockertree 只需要一个 `dockertree.sh` 管理脚本。脚本会检查 Git、Go 1.23+、Docker CLI 和 Docker Compose，缺失时根据操作系统自动安装，然后直接从 GitHub 获取源码并构建，不需要手动克隆仓库：
+## 主要功能
+
+- 自动发现 Compose 项目和独立容器。
+- 分页查看容器、项目和本地镜像，并按名称、状态、健康状况、类型、标签或收藏筛选。
+- 查看容器日志、端口、网络、挂载、重启策略和资源快照。
+- 启停、重启、更新和保守删除容器或 Compose 项目。
+- 通过镜像名称或 Compose YAML 部署新服务，支持部署模板。
+- 编辑已发现的 Compose 文件，保存前进行校验和内容对比。
+- 检查项目镜像更新，并可配置定时 Webhook 或 ntfy 通知。
+- 查看脱敏后的操作历史，导出或恢复配置。
+- 清理选中的已停止容器、悬空镜像和未使用的自定义网络。
+- 支持浅色、深色主题和仅在页面可见时执行的自动刷新。
+
+## 系统要求
+
+支持 Linux 和 macOS，需要以下组件：
+
+- Git
+- Go 1.23 或更高版本
+- Docker CLI 和可用的 Docker daemon
+- Docker Compose V2，即 `docker compose`
+
+管理脚本可以尝试补齐缺失组件。macOS 使用 Homebrew，Linux 支持 APT、DNF、YUM、Pacman 和 Zypper。安装系统软件或注册系统服务时可能需要输入 `sudo` 密码。
+
+## 快速安装
+
+请使用普通用户执行以下命令，不要在整个脚本前添加 `sudo`：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ZASENJC/dockertree/main/dockertree.sh -o dockertree.sh
@@ -39,7 +47,99 @@ chmod 755 dockertree.sh
 ./dockertree.sh start
 ```
 
-管理命令包括：
+`install` 会从 GitHub 获取源码并构建 Dockertree，`start` 会启动程序并显示访问地址和管理员令牌。安装和启动还会注册自动启动任务：
+
+- Linux：系统级 systemd 服务，在设备启动后运行。
+- macOS：LaunchAgent，在当前用户登录后运行。
+
+默认路径如下：
+
+| 内容 | 路径 |
+| --- | --- |
+| 程序 | `~/.local/bin/dockertree` |
+| 配置与数据 | `~/.config/dockertree/` |
+| 日志与 PID | `~/.local/state/dockertree/` |
+| Web 地址 | `http://<主机地址>:27680` |
+
+## 首次使用
+
+1. 执行 `./dockertree.sh start`，记下输出中的访问地址和管理员令牌。
+2. 用浏览器打开访问地址。
+3. 将管理员令牌粘贴到页面右上角并点击 `保存`。
+4. 点击 `扫描`，读取当前 Docker 容器、Compose 项目和本地镜像。
+5. 打开 `项目` 页面，确认新建项目根目录和附加扫描目录是否符合你的环境。
+
+Dockertree 默认监听 `0.0.0.0:27680`，同一局域网中的设备可能可以访问。若只需本机使用，请参考[限制为本机访问](#限制为本机访问)。
+
+## 页面说明
+
+| 页面 | 用途 |
+| --- | --- |
+| `概览` | 查看项目、容器、镜像数量，需要关注的异常状态和资源快照。 |
+| `容器` | 查看容器详情、日志和挂载，并执行启停、重启或删除。 |
+| `项目` | 管理 Compose/独立项目、项目目录、标签、收藏和更新。 |
+| `镜像` | 查看或删除本地镜像，也可将镜像带入部署页面。 |
+| `部署` | 通过镜像或 Compose YAML 部署服务，并保存个人模板。 |
+| `历史` | 按目标或失败状态查询 Docker 操作记录。 |
+| `维护` | 检查更新、配置通知、执行安全清理及备份恢复。 |
+
+所有 Docker 命令的结果都会显示在页面顶部的全局操作输出区域。操作失败时，界面会展示实际命令、退出码和 Docker 输出，便于定位问题。
+
+## 常用操作
+
+### 扫描已有 Compose 项目
+
+Dockertree 会读取 `docker compose ls` 和容器上的 Compose 标签，同时递归扫描已配置目录中的以下文件：
+
+- `compose.yaml`
+- `compose.yml`
+- `docker-compose.yaml`
+- `docker-compose.yml`
+
+在 `项目` 页面填写新建项目根目录和附加扫描目录，每行一个绝对路径，然后点击 `保存并扫描`。扫描只建立索引，不会移动或改写原文件。
+
+默认的新建项目根目录是 `/opt`。如果运行 Dockertree 的用户不能写入 `/opt`，建议改为该用户可写的目录，例如 `$HOME/docker-projects`，或只为专用目录授予必要权限。
+
+### 使用镜像部署容器
+
+1. 打开 `部署` 页面并选择 `镜像部署`。
+2. 输入镜像名称，例如 `redis:7`，也可以先搜索 Docker Hub。
+3. 按需配置端口、环境变量、挂载、网络和重启策略。
+4. 点击 `预览命令` 检查即将执行的 `docker run` 命令。
+5. 确认后点击 `部署`。
+
+容器名称会根据镜像自动生成，也可以在高级选项中覆盖。
+
+### 新建或编辑 Compose 项目
+
+在 `部署` 页面选择 `Compose 部署`，填写项目名称和 Compose YAML。项目路径会自动生成为：
+
+```text
+<projectRoot>/<项目名>/compose.yml
+```
+
+你可以选择：
+
+- `预览`：校验并展示规范化后的 Compose 内容，不写文件、不启动容器。
+- `仅保存`：确认后写入 Compose 文件，但不启动或更新服务。
+- `保存并部署`：写入文件并执行 `docker compose up -d`。
+
+编辑已有项目时，Dockertree 会继续使用原文件路径。多 Compose 文件项目会保留原来的文件顺序。如果预览后文件被其他程序修改，Dockertree 会拒绝用过期内容覆盖它。
+
+### 更新和删除
+
+项目更新会先执行镜像拉取，再执行 `docker compose up -d`，不会隐式重新构建本地镜像。更新检查使用 Compose dry-run，不会实际拉取镜像。
+
+删除操作需要浏览器确认，并遵循以下边界：
+
+- 删除容器：执行 `docker rm -f <id>`。
+- 删除项目：只执行 `docker compose down`，不会添加 `-v`，命名数据卷会保留。
+- 删除镜像：执行 `docker rmi <ref>`。
+- 安全清理：不会执行 `docker system prune`，也不会删除数据卷。
+
+删除容器或项目后，Dockertree 会重新扫描 Docker 并刷新清单。
+
+## 管理命令
 
 ```bash
 ./dockertree.sh doctor
@@ -52,89 +152,147 @@ chmod 755 dockertree.sh
 ./dockertree.sh uninstall
 ```
 
-不带参数运行 `./dockertree.sh` 会显示包含全部指令的帮助信息。
+| 命令 | 说明 |
+| --- | --- |
+| `doctor` | 只检查 Git、Go、Docker 和 Compose，不安装软件或启动 Docker。 |
+| `install` | 获取源码、构建程序、初始化配置并注册自动启动。 |
+| `update` | 获取最新源码并构建；保留现有配置，运行中的实例会自动重启。 |
+| `start` | 检查 Docker、处理端口冲突并启动 Dockertree。 |
+| `status` | 显示当前运行状态。 |
+| `restart` | 重启 Dockertree。 |
+| `stop` | 停止 Dockertree。 |
+| `uninstall` | 删除程序和运行状态，保留配置与管理脚本。 |
 
-默认二进制文件路径为 `~/.local/bin/dockertree`，运行日志和 PID 文件存储在 `~/.local/state/dockertree/` 下。新安装会创建默认监听 `0.0.0.0:27680` 的配置。普通卸载会保留 `~/.config/dockertree/`。如需删除二进制文件、运行时文件和全部 Dockertree 配置，请执行 `./dockertree.sh uninstall --purge --yes`。
-
-`install` 和 `start` 会自动注册设备重启后的启动任务：Linux 使用系统级 `/etc/systemd/system/dockertree.service`，并以执行安装的普通用户身份运行 Dockertree，因此不依赖登录会话或用户级 D-Bus；安装 unit 和执行 `systemctl enable` 时可能要求输入 `sudo` 密码。macOS 使用 `~/Library/LaunchAgents/io.github.zasenjc.dockertree.plist`，在用户登录后自动启动。两种任务都会以前台托管方式持续跟踪 Dockertree；即使 Docker 尚未就绪，控制台也会先启动，并在 Docker 可用后正常扫描。`uninstall` 会同时禁用并删除这些自启动配置。请使用普通用户执行管理脚本，不要对整个脚本使用 `sudo`。
-
-管理脚本放在 `/opt` 等普通用户不可写目录时，安装和更新会先在用户状态目录暂存新版脚本，仅在替换管理脚本文件时请求 `sudo`。不要使用 `sudo ./dockertree.sh install`、`update`、`start` 或 `restart`，否则程序和配置会落到 `/root`；脚本会主动拒绝这些调用。为迁移旧的 root 安装，可以先执行 `sudo ./dockertree.sh stop` 和 `sudo ./dockertree.sh uninstall`，再以普通用户重新执行 `./dockertree.sh install` 和 `./dockertree.sh start`。
-
-可通过 `DOCKERTREE_INSTALL_DIR`、`DOCKERTREE_STATE_DIR` 或 `DOCKERTREE_CONFIG_DIR` 覆盖这些路径。安装或启动时如果监听端口已被占用，脚本会提示输入新端口并保存到 `config.yaml`；非交互环境可通过 `DOCKERTREE_PORT=28680 ./dockertree.sh start` 指定并保存端口。
-
-环境自动补全支持 macOS Homebrew，以及 Linux 的 APT、DNF、YUM、Pacman 和 Zypper。macOS 未安装 Homebrew 时，脚本会停止并提示先安装 Homebrew；Linux 安装系统软件时可能要求输入 `sudo` 密码。Docker 安装完成后，脚本会尝试启动 Docker Desktop 或 Docker 服务；如果 daemon 尚未就绪，Dockertree 仍会完成安装并给出提示。`start` 会要求 `docker info` 成功，避免启动一个无法管理 Docker 的实例；Linux 用户还需确保当前账号具有 Docker socket 访问权限。
-
-`doctor` 只检查环境，不安装软件或启动 Docker。设置 `DOCKERTREE_AUTO_INSTALL=0` 可以关闭 `install`、`update` 和 `start` 的自动环境补全。
-
-`./dockertree.sh install` 和 `./dockertree.sh update` 都会直接从 GitHub 仓库 `https://github.com/ZASENJC/dockertree.git` 获取源码，在临时目录完成构建，并同步刷新 `dockertree.sh` 自身。源码临时目录会在操作结束后删除。更新不会覆盖配置；如果 Dockertree 原本正在运行，更新成功后会自动重启。GitHub 获取或编译失败时会保留当前二进制和运行中的进程。更新来源可通过 `DOCKERTREE_GITHUB_REPOSITORY` 和 `DOCKERTREE_GITHUB_REF` 覆盖。
-
-`./dockertree.sh uninstall` 会删除已安装程序和运行状态，但保留这个管理脚本；使用 `--purge --yes` 时还会删除 Dockertree 配置。如果配置目录包含管理脚本，清理会被拒绝，避免删除唯一的 `dockertree.sh`。之后仍可使用同一个 `dockertree.sh install` 重新安装。
-
-## 运行
+彻底删除程序和全部配置：
 
 ```bash
+./dockertree.sh uninstall --purge --yes
+```
+
+更新失败时，脚本会保留当前二进制和正在运行的进程。运行不带参数的 `./dockertree.sh` 可以查看完整帮助。
+
+## 配置与数据
+
+默认配置目录为 `~/.config/dockertree/`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `config.yaml` | 监听地址、管理员令牌、项目目录、更新与通知设置。 |
+| `inventory.yaml` | 已发现项目、Compose 路径、服务、端口、标签和收藏。 |
+| `templates.yaml` | 个人镜像和 Compose 部署模板。 |
+| `logs/operations.jsonl` | 仅追加写入的脱敏操作历史。 |
+
+导出的配置备份不会包含管理员令牌。恢复备份时，当前管理员令牌、监听地址和局域网访问策略会被保留。
+
+### 限制为本机访问
+
+默认配置允许局域网访问。若不需要远程访问，请编辑 `~/.config/dockertree/config.yaml`：
+
+```yaml
+listenAddr: 127.0.0.1:27680
+allowLan: false
+```
+
+修改后执行：
+
+```bash
+./dockertree.sh restart
+```
+
+管理员令牌可以控制 Docker 操作，请像密码一样保管。Dockertree 不会在容器详情 API 中返回容器环境变量，但仍应避免把管理端口直接暴露到互联网。
+
+### 自定义路径和端口
+
+以下环境变量可以覆盖默认设置：
+
+| 变量 | 用途 |
+| --- | --- |
+| `DOCKERTREE_INSTALL_DIR` | 二进制安装目录。 |
+| `DOCKERTREE_STATE_DIR` | 日志和 PID 目录。 |
+| `DOCKERTREE_CONFIG_DIR` | 配置与长期数据目录。 |
+| `DOCKERTREE_PORT` | 在非交互环境中指定并保存监听端口。 |
+| `DOCKERTREE_AUTO_INSTALL=0` | 禁止脚本自动安装缺失组件。 |
+| `DOCKERTREE_GITHUB_REPOSITORY` | 覆盖源码仓库地址。 |
+| `DOCKERTREE_GITHUB_REF` | 覆盖构建使用的分支或标签，默认 `main`。 |
+
+例如：
+
+```bash
+DOCKERTREE_PORT=28680 ./dockertree.sh start
+```
+
+如果默认端口已被占用，交互式启动会提示选择新端口并写入 `config.yaml`。
+
+## 常见问题
+
+### 页面能打开，但没有任何数据
+
+先确认已在页面中保存正确的管理员令牌，然后点击 `扫描`。还可以运行：
+
+```bash
+./dockertree.sh status
+docker info
+docker compose version
+```
+
+### 启动时提示无法访问 Docker
+
+确认 Docker Desktop 或 Docker 服务已经启动。Linux 用户还需要确保当前账号有权访问 Docker socket；完成用户组调整后通常需要重新登录。
+
+### 扫描不到已有 Compose 项目
+
+在 `项目` 页面把项目所在的绝对路径加入扫描目录并点击 `保存并扫描`。运行 Dockertree 的用户必须能够遍历目录并读取 Compose 文件。符号链接文件会被拒绝。
+
+### 无法在 `/opt` 新建项目
+
+Linux 上的 `/opt` 通常不可由普通用户写入。请把新建项目根目录改为可写的绝对路径，或预先创建一个专用子目录并授予运行用户最小必要权限。
+
+### 端口被占用
+
+重新运行 `./dockertree.sh start` 并按提示选择端口，或者显式指定：
+
+```bash
+DOCKERTREE_PORT=28680 ./dockertree.sh start
+```
+
+### 之前使用 `sudo` 安装过
+
+不要执行 `sudo ./dockertree.sh install`、`update`、`start` 或 `restart`，否则程序和配置会落到 `/root`。迁移旧的 root 安装时，可以先停止并卸载旧实例，再以普通用户重新安装：
+
+```bash
+sudo ./dockertree.sh stop
+sudo ./dockertree.sh uninstall
+./dockertree.sh install
+./dockertree.sh start
+```
+
+## 从源码运行
+
+```bash
+git clone https://github.com/ZASENJC/dockertree.git
+cd dockertree
 go run ./cmd/dockertree
 ```
 
-服务器启动时会将访问地址、配置目录和生成的管理员令牌写入日志。`./dockertree.sh start` 会从本次启动日志中提取并显示访问地址和管理员令牌。打开该地址，粘贴并保存令牌，然后点击 `扫描` 读取本地 Docker 状态。
-
-测试或迁移时，可以指定一个可迁移的配置目录：
+服务器启动时会输出访问地址、配置目录和管理员令牌。也可以使用独立配置目录进行测试：
 
 ```bash
-DOCKERTREE_CONFIG_DIR=/path/to/dockertree-config go run ./cmd/dockertree
+DOCKERTREE_CONFIG_DIR=/tmp/dockertree-dev go run ./cmd/dockertree
 ```
 
-## 构建
+构建单个可执行文件：
 
 ```bash
 go build -o dockertree ./cmd/dockertree
 ./dockertree
 ```
 
-## 配置文件
-
-- `config.yaml`：监听地址、管理员令牌、新建项目根目录 `projectRoot`、附加扫描路径 `scanPaths`、更新默认值和 UI 偏好。
-- `inventory.yaml`：已发现的项目、原始 Compose 文件路径、工作目录、服务、端口、标签和收藏。
-- `templates.yaml`：个人容器和 Compose 部署模板。
-- `logs/operations.jsonl`：仅追加写入的脱敏操作历史。
-
-Dockertree 默认监听所有网络接口，并在 `config.yaml` 中启用 `allowLan: true`。如需限制为本机访问，可将 `listenAddr` 改为 `127.0.0.1:<端口>` 并将 `allowLan` 设为 `false`。
-
-## Compose 项目目录
-
-新安装的 `projectRoot` 默认为 `/opt`，用于确定新建 Compose 项目的保存位置。`项目` 页面可以修改该根目录，并可在 `扫描目录` 中按每行一个绝对路径填写其他已有项目目录。保存设置后无需重启，Dockertree 会立即递归扫描这些目录；新建项目根目录始终会包含在实际扫描范围中。
-
-目录扫描识别 `compose.yaml`、`compose.yml`、`docker-compose.yaml` 和 `docker-compose.yml`。因此，对于已经手动放在 `/opt/<项目目录>/` 或其他已配置目录中的项目，点击 `保存并扫描` 后即可在项目列表中看到匹配的 Compose 文件。扫描只建立索引，不会移动或改写原文件。展开项目后，可以点击对应文件旁的 `编辑`，在 Compose 编辑器中读取和修改该文件；保存时仍使用它原来的绝对路径。多 Compose 文件项目在校验和部署时会继续按清单中的原顺序带上全部 `-f` 文件，不会只用当前编辑的单个文件重建服务。
-
-新建 Compose 项目时只需填写项目名称和 Compose 内容。路径由只读字段展示，并按 `<projectRoot>/<项目名>/compose.yml` 自动派生；使用默认设置时即为 `/opt/<项目名>/compose.yml`。项目名称必须是单层文件夹名称，系统会拒绝 `..`、路径分隔符以及通过符号链接逃出新建项目根目录的路径。
-
-运行 Dockertree 的系统账号必须能够遍历和读取扫描目录；新建项目时还必须能够在 `projectRoot` 下创建子目录和文件，编辑已有项目时必须拥有对应文件及目录的写入权限。为避免越界读取和写入，编辑入口只接受已配置项目目录内的普通文件，并拒绝符号链接。Linux 上的 `/opt` 通常不允许普通用户直接写入，可预先创建并授权专用目录，或把 `projectRoot` 改为该账号可写的绝对路径。不要用开放所有权限的方式替代最小化授权。管理 Compose 文件和执行 Docker 命令的 API 均受管理员令牌保护；若无局域网访问需求，建议仅监听本机地址，并妥善保管令牌和 Docker socket 访问权限。
-
-## 测试
+## 开发与测试
 
 ```bash
 go test ./...
 go test ./... -cover
+go build -o dockertree ./cmd/dockertree
 ```
 
-测试使用模拟的 Docker runner/executor 验证 API 和部署行为，不会改动真实容器。
-
-Docker 命令失败时会返回具体命令、退出码和原始 Docker 输出，因此容器名称冲突等错误会直接显示在 UI 中，而不只是显示 `exit status 125`。
-
-## 新建部署
-
-Web UI 的 `部署新容器` 面板提供两种模式：
-
-- `镜像部署`：输入镜像搜索词或镜像名称，可选择搜索 Docker Hub，预览 `docker run -d --name ...` 命令后再部署。Dockertree 会根据镜像自动生成容器名称，也可通过高级选项覆盖该名称。
-- `Compose 部署`：新建时输入项目名称和 Compose YAML 内容，系统按 `projectRoot` 自动派生只读的 Compose 路径并创建缺少的项目目录；编辑已发现项目时沿用原文件路径。`仅保存` 会在校验并确认后写入文件，但不会启动或更新容器；`保存并部署` 会写入文件，并在该文件所在目录执行 `docker compose -f <path> up -d`。
-
-预览接口绝不会写入文件或启动容器。`仅保存` 和 `保存并部署` 都会先调用 Compose 配置校验，并在覆盖文件前要求浏览器确认；只有 `保存并部署` 会执行真实的部署操作。编辑期间如果磁盘上的原文件发生变化，系统会拒绝使用过期预览覆盖它。
-
-删除操作同样会执行真实的 Docker 命令。删除项目时使用 `docker compose down`，并且有意不传入 `-v`，因此命名数据卷会被保留。
-删除容器或项目后，Dockertree 会立即重新扫描 Docker 并改写 `inventory.yaml`，确保 UI 展示当前 Docker 状态，而不是过期的清单数据。具体命令和 Docker 输出会显示在全局操作输出区域。
-
-资源快照使用只读命令 `docker stats --no-stream`，仅在概览页面打开时或用户主动刷新时请求。页面不可见时，自动刷新也会跳过扫描。
-
-更新检查使用 Docker Compose 的 dry-run 模式，不会拉取镜像。定时检查默认关闭，可配置为每小时、每 6 小时或每天执行。只有定时更新通知或用户明确执行测试通知时，才会请求 Webhook URL。
-
-导出配置时会生成一个移除了管理员令牌的 YAML 备份。恢复时会保留当前正在使用的管理员令牌、监听地址和局域网绑定策略；恢复后的项目扫描路径会立即应用，其他需要重新初始化的进程级设置仍应在重启 Dockertree 后确认生效。
+测试使用模拟 Docker runner/executor，不会修改真实 Docker 容器。
