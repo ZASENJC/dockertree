@@ -1182,7 +1182,8 @@ function renderContainerDetail(item) {
         <button class="secondary" type="button" data-logs>日志</button>
         <button class="secondary" type="button" data-inspect>检查</button>
         <button class="secondary" type="button" data-check-update>检查更新</button>
-        <button type="button" data-deploy>拉取并重新部署</button>
+        <button type="button" data-update>更新</button>
+        <button class="danger" type="button" data-redeploy>重新部署</button>
         <button class="secondary" type="button" data-project>查看项目</button>
         <button class="danger" type="button" data-delete>删除容器</button>
       </div>
@@ -1224,11 +1225,12 @@ function renderContainerDetail(item) {
   detail.querySelector('[data-logs]').addEventListener('click', () => containerLogs(item));
   detail.querySelector('[data-inspect]').addEventListener('click', () => containerInspect(item));
   detail.querySelector('[data-check-update]').addEventListener('click', () => containerCheckUpdate(item));
-  detail.querySelector('[data-deploy]').addEventListener('click', () => containerDeploy(item));
+  detail.querySelector('[data-update]').addEventListener('click', () => containerDeploy(item));
+  detail.querySelector('[data-redeploy]').addEventListener('click', () => containerRedeploy(item));
   detail.querySelector('[data-project]').addEventListener('click', () => openContainerProject(item));
   detail.querySelector('[data-delete]').addEventListener('click', () => deleteContainer(item));
   const composeManaged = item.projectType === 'compose';
-  for (const button of detail.querySelectorAll('[data-check-update], [data-deploy]')) {
+  for (const button of detail.querySelectorAll('[data-check-update], [data-update], [data-redeploy]')) {
     button.disabled = !composeManaged;
     if (!composeManaged) button.title = '独立容器无法可靠恢复原始 docker run 参数，请迁移到 Compose 后更新。';
   }
@@ -1304,7 +1306,8 @@ function renderProjectDetail(project) {
         <button class="secondary" id="logs">日志</button>
         <button class="secondary" id="checkUpdate">检查更新</button>
         <button class="secondary" id="preview">更新预览</button>
-        <button class="danger" id="deploy">重新部署/更新</button>
+        <button id="deploy">更新</button>
+        <button class="danger" id="redeploy">重新部署</button>
         <button class="danger" id="deleteProject"></button>
       </div>
     </div>
@@ -1378,6 +1381,7 @@ function renderProjectDetail(project) {
   });
   detail.querySelector('#preview').addEventListener('click', () => preview(project.id));
   detail.querySelector('#deploy').addEventListener('click', () => deploy(project.id));
+  detail.querySelector('#redeploy').addEventListener('click', () => redeploy(project.id));
   detail.querySelector('#start').addEventListener('click', () => lifecycle(project.id, 'start'));
   detail.querySelector('#stop').addEventListener('click', () => lifecycle(project.id, 'stop'));
   detail.querySelector('#restart').addEventListener('click', () => lifecycle(project.id, 'restart'));
@@ -1729,10 +1733,26 @@ async function preview(id) {
 
 async function deploy(id) {
   const planEl = currentProjectPlan() || deployOutput;
-  if (!confirm('确认执行更新部署命令？')) return;
+  if (!confirm('确认拉取最新镜像并更新项目？')) return;
   const stopLogRefresh = startProjectLogRefresh(id);
   try {
     const results = await apiResult(`/api/projects/${encodeURIComponent(id)}/actions/deploy`, { method: 'POST' });
+    planEl.textContent = formatDeployResult(results);
+    showOperationResult(results);
+    await stopLogRefresh();
+    await loadProjects();
+  } catch (err) {
+    planEl.textContent = err.message;
+    await stopLogRefresh();
+  }
+}
+
+async function redeploy(id) {
+  const planEl = currentProjectPlan() || deployOutput;
+  if (!confirm('确认使用当前镜像重新部署项目？此操作将强制重新创建容器。')) return;
+  const stopLogRefresh = startProjectLogRefresh(id);
+  try {
+    const results = await apiResult(`/api/projects/${encodeURIComponent(id)}/actions/redeploy`, { method: 'POST' });
     planEl.textContent = formatDeployResult(results);
     showOperationResult(results);
     await stopLogRefresh();
@@ -1782,11 +1802,34 @@ async function containerCheckUpdate(container) {
 
 async function containerDeploy(container) {
   const id = container.containerId || container.id;
-  if (!confirm(`确认拉取并重新部署容器 ${container.name}？`)) return;
+  if (!confirm(`确认拉取最新镜像并更新容器 ${container.name}？`)) return;
   const planEl = currentContainerPlan() || deployOutput;
   const stopLogRefresh = startContainerLogRefresh(container);
   try {
     const results = await apiResult(`/api/containers/${encodeURIComponent(id)}/actions/deploy`, { method: 'POST' });
+    planEl.textContent = formatDeployResult(results);
+    showOperationResult(results);
+    await stopLogRefresh();
+    await loadProjects();
+    const refreshed = flattenContainers().find((item) => item.projectId === container.projectId && item.name === container.name);
+    if (refreshed) {
+      state.selectedContainer = refreshed.id;
+      ensureContainerVisible(refreshed.id);
+      renderContainers();
+    }
+  } catch (err) {
+    planEl.textContent = err.message;
+    await stopLogRefresh();
+  }
+}
+
+async function containerRedeploy(container) {
+  const id = container.containerId || container.id;
+  if (!confirm(`确认使用当前镜像重新部署容器 ${container.name}？此操作将强制重新创建容器。`)) return;
+  const planEl = currentContainerPlan() || deployOutput;
+  const stopLogRefresh = startContainerLogRefresh(container);
+  try {
+    const results = await apiResult(`/api/containers/${encodeURIComponent(id)}/actions/redeploy`, { method: 'POST' });
     planEl.textContent = formatDeployResult(results);
     showOperationResult(results);
     await stopLogRefresh();

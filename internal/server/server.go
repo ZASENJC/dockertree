@@ -151,12 +151,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/containers/{id}/actions/restart", s.auth(s.containerLifecycle("restart")))
 	mux.HandleFunc("POST /api/containers/{id}/actions/check-update", s.auth(s.checkContainerUpdate))
 	mux.HandleFunc("POST /api/containers/{id}/actions/deploy", s.auth(s.deployContainerService))
+	mux.HandleFunc("POST /api/containers/{id}/actions/redeploy", s.auth(s.redeployContainerService))
 	mux.HandleFunc("GET /api/containers/{id}/logs", s.auth(s.containerLogs))
 	mux.HandleFunc("DELETE /api/images", s.auth(s.deleteImage))
 	mux.HandleFunc("POST /api/scan", s.auth(s.scan))
 	mux.HandleFunc("POST /api/projects/{id}/actions/preview-update", s.auth(s.previewUpdate))
 	mux.HandleFunc("POST /api/projects/{id}/actions/check-update", s.auth(s.checkProjectUpdate))
 	mux.HandleFunc("POST /api/projects/{id}/actions/deploy", s.auth(s.deploy))
+	mux.HandleFunc("POST /api/projects/{id}/actions/redeploy", s.auth(s.redeploy))
 	mux.HandleFunc("POST /api/projects/{id}/actions/start", s.auth(s.lifecycle("start")))
 	mux.HandleFunc("POST /api/projects/{id}/actions/stop", s.auth(s.lifecycle("stop")))
 	mux.HandleFunc("POST /api/projects/{id}/actions/restart", s.auth(s.lifecycle("restart")))
@@ -411,6 +413,37 @@ func (s *Server) deploy(w http.ResponseWriter, r *http.Request) {
 	respond(w, results, nil)
 }
 
+func (s *Server) redeploy(w http.ResponseWriter, r *http.Request) {
+	project, ok, err := s.findProject(r.PathValue("id"))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	commands := docker.RedeployCommands(project)
+	if len(commands) == 0 {
+		badRequest(w, errText("project has no compose file"))
+		return
+	}
+	results := make([]docker.Result, 0, len(commands))
+	for _, cmd := range commands {
+		result, execErr := s.executeRecorded(r.Context(), cmd, "project", project.ID, project.Name, "redeploy")
+		results = append(results, result)
+		if execErr != nil {
+			respond(w, results, execErr)
+			return
+		}
+	}
+	if err := s.refreshInventory(r.Context()); err != nil {
+		respond(w, results, err)
+		return
+	}
+	respond(w, results, nil)
+}
+
 func (s *Server) lifecycle(action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		project, ok, err := s.findProject(r.PathValue("id"))
@@ -529,6 +562,38 @@ func (s *Server) deployContainerService(w http.ResponseWriter, r *http.Request) 
 	results := make([]docker.Result, 0, 3)
 	for _, cmd := range docker.ServiceUpdateCommands(project, service.Name) {
 		result, execErr := s.executeRecorded(r.Context(), cmd, "container", containerID, service.Name, "deploy")
+		results = append(results, result)
+		if execErr != nil {
+			respond(w, results, execErr)
+			return
+		}
+	}
+	if err := s.refreshInventory(r.Context()); err != nil {
+		respond(w, results, err)
+		return
+	}
+	respond(w, results, nil)
+}
+
+func (s *Server) redeployContainerService(w http.ResponseWriter, r *http.Request) {
+	containerID := strings.TrimSpace(r.PathValue("id"))
+	project, service, ok, err := s.findContainerTarget(containerID)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	commands := docker.ServiceRedeployCommands(project, service.Name)
+	if len(commands) == 0 {
+		badRequest(w, errText("container redeploy requires a Compose-managed service"))
+		return
+	}
+	results := make([]docker.Result, 0, len(commands))
+	for _, cmd := range commands {
+		result, execErr := s.executeRecorded(r.Context(), cmd, "container", containerID, service.Name, "redeploy")
 		results = append(results, result)
 		if execErr != nil {
 			respond(w, results, execErr)

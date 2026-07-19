@@ -311,6 +311,15 @@ func UpdateCommands(project core.Project, removeOrphans bool) []Command {
 	return commands
 }
 
+func RedeployCommands(project core.Project) []Command {
+	if project.Type != core.ProjectTypeCompose || len(project.ConfigFiles) == 0 {
+		return nil
+	}
+	args := composeArgs(project.ConfigFiles)
+	args = append(args, "up", "-d", "--force-recreate")
+	return []Command{{Name: "docker", Args: args, Dir: project.WorkingDir}}
+}
+
 func ServiceUpdateCheckCommand(project core.Project, service string) Command {
 	args := composeArgs(project.ConfigFiles)
 	args = append(args, "--dry-run", "pull", strings.TrimSpace(service))
@@ -336,6 +345,16 @@ func ServiceUpdateCommands(project core.Project, service string) []Command {
 		Name: "docker", Args: append(append([]string{}, base...), "up", "-d", "--no-deps", service), Dir: project.WorkingDir,
 	})
 	return commands
+}
+
+func ServiceRedeployCommands(project core.Project, service string) []Command {
+	service = strings.TrimSpace(service)
+	if project.Type != core.ProjectTypeCompose || len(project.ConfigFiles) == 0 || service == "" {
+		return nil
+	}
+	args := composeArgs(project.ConfigFiles)
+	args = append(args, "up", "-d", "--no-deps", "--force-recreate", service)
+	return []Command{{Name: "docker", Args: args, Dir: project.WorkingDir}}
 }
 
 func ComposeValidateCommand(project core.Project) Command {
