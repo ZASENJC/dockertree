@@ -367,6 +367,7 @@ func TestProjectEndpointsReturnNotFoundAndStoreErrors(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/projects/compose:missing"},
 		{http.MethodPost, "/api/projects/compose:missing/actions/preview-update"},
+		{http.MethodPost, "/api/projects/compose:missing/actions/redeploy"},
 		{http.MethodPost, "/api/projects/compose:missing/actions/restart"},
 		{http.MethodGet, "/api/projects/compose:missing/logs"},
 		{http.MethodDelete, "/api/projects/compose:missing"},
@@ -421,6 +422,14 @@ func TestBadRequestEndpointsReturnReadableErrors(t *testing.T) {
 	if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "Standalone containers cannot be safely recreated") {
 		t.Fatalf("standalone deploy status=%d body=%s", r.Code, r.Body.String())
 	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/container:solo/actions/redeploy", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	r = httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+	if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "compose file") {
+		t.Fatalf("standalone redeploy status=%d body=%s", r.Code, r.Body.String())
+	}
 }
 
 func TestScanReturnsPartialResultWhenSavingInventoryFails(t *testing.T) {
@@ -469,6 +478,32 @@ func TestDeployExecutesConservativeComposeCommands(t *testing.T) {
 	}
 	if strings.Join(exec.commands, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("commands = %#v", exec.commands)
+	}
+}
+
+func TestProjectRedeployUsesCurrentImagesAndForcesRecreation(t *testing.T) {
+	project := core.Project{
+		ID: "compose:mtp", Name: "mtp", Type: core.ProjectTypeCompose, WorkingDir: "/srv/mtp",
+		ConfigFiles: []string{"/srv/mtp/docker-compose.yml"}, Services: []core.Service{{Name: "app", Image: "mtp-app"}},
+	}
+	inv := &fakeInventory{projects: []core.Project{project}}
+	exec := &fakeExecutor{}
+	h := New(config.Config{AdminToken: "secret"}, inv, fakeScanner{projects: []core.Project{project}}, exec).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/compose:mtp/actions/redeploy", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+
+	if r.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+	}
+	want := []string{"docker compose -f /srv/mtp/docker-compose.yml up -d --force-recreate"}
+	if !reflect.DeepEqual(exec.commands, want) {
+		t.Fatalf("commands=%#v want=%#v", exec.commands, want)
+	}
+	if inv.saves != 1 {
+		t.Fatalf("inventory saves=%d", inv.saves)
 	}
 }
 
@@ -736,6 +771,36 @@ func TestContainerUpdateCheckAndDeployTargetOnlySelectedComposeService(t *testin
 	}
 }
 
+func TestContainerRedeployTargetsOnlySelectedComposeService(t *testing.T) {
+	project := core.Project{
+		ID: "compose:app", Name: "app", Type: core.ProjectTypeCompose, WorkingDir: "/srv/app",
+		ConfigFiles: []string{"/srv/app/compose.yml"},
+		Services: []core.Service{
+			{Name: "web", ContainerID: "web123", Image: "registry/web:latest"},
+			{Name: "worker", ContainerID: "worker456", Image: "registry/worker:latest"},
+		},
+	}
+	inv := &fakeInventory{projects: []core.Project{project}}
+	exec := &fakeExecutor{}
+	h := New(config.Config{AdminToken: "secret"}, inv, fakeScanner{projects: []core.Project{project}}, exec).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/containers/web123/actions/redeploy", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, req)
+
+	if r.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+	}
+	want := []string{"docker compose -f /srv/app/compose.yml up -d --no-deps --force-recreate web"}
+	if !reflect.DeepEqual(exec.commands, want) {
+		t.Fatalf("commands=%#v want=%#v", exec.commands, want)
+	}
+	if inv.saves != 1 {
+		t.Fatalf("inventory saves=%d", inv.saves)
+	}
+}
+
 func TestComposePullStreamUsesProgressEventsWithoutRawJSONOutput(t *testing.T) {
 	project := core.Project{
 		ID:          "compose:app",
@@ -781,7 +846,7 @@ func TestContainerUpdateRejectsStandaloneContainers(t *testing.T) {
 		Services: []core.Service{{Name: "redis", ContainerID: "redis123", Image: "redis:7"}},
 	}
 	h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{standalone}}, fakeScanner{}, &fakeExecutor{}).Handler()
-	for _, action := range []string{"check-update", "deploy"} {
+	for _, action := range []string{"check-update", "deploy", "redeploy"} {
 		req := httptest.NewRequest(http.MethodPost, "/api/containers/redis123/actions/"+action, nil)
 		req.Header.Set("Authorization", "Bearer secret")
 		r := httptest.NewRecorder()
@@ -806,7 +871,7 @@ func TestContainerUpdateEndpointsReturnUsefulFailures(t *testing.T) {
 
 	t.Run("missing container", func(t *testing.T) {
 		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{projects: []core.Project{project}}, fakeScanner{}, &fakeExecutor{}).Handler()
-		for _, action := range []string{"check-update", "deploy"} {
+		for _, action := range []string{"check-update", "deploy", "redeploy"} {
 			r := httptest.NewRecorder()
 			h.ServeHTTP(r, authorizedRequest(http.MethodPost, "/api/containers/missing/actions/"+action))
 			if r.Code != http.StatusNotFound {

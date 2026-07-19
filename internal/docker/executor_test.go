@@ -264,6 +264,30 @@ func TestServiceUpdateCommandsTargetOnlySelectedComposeService(t *testing.T) {
 	}
 }
 
+func TestRedeployCommandsForceRecreateWithoutPullingImages(t *testing.T) {
+	project := core.Project{Type: core.ProjectTypeCompose, WorkingDir: "/srv/photo tree", ConfigFiles: []string{"/srv/photo tree/compose.yml"}}
+	wantProject := []Command{{
+		Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "up", "-d", "--force-recreate"}, Dir: "/srv/photo tree",
+	}}
+	if got := RedeployCommands(project); !reflect.DeepEqual(got, wantProject) {
+		t.Fatalf("project redeploy commands = %#v, want %#v", got, wantProject)
+	}
+
+	wantService := []Command{{
+		Name: "docker", Args: []string{"compose", "-f", "/srv/photo tree/compose.yml", "up", "-d", "--no-deps", "--force-recreate", "web"}, Dir: "/srv/photo tree",
+	}}
+	if got := ServiceRedeployCommands(project, " web "); !reflect.DeepEqual(got, wantService) {
+		t.Fatalf("service redeploy commands = %#v, want %#v", got, wantService)
+	}
+
+	if got := RedeployCommands(core.Project{Type: core.ProjectTypeStandalone}); got != nil {
+		t.Fatalf("standalone redeploy commands = %#v, want nil", got)
+	}
+	if got := ServiceRedeployCommands(project, " "); got != nil {
+		t.Fatalf("empty service redeploy commands = %#v, want nil", got)
+	}
+}
+
 func TestServiceUpdateCheckCommandTargetsOnlySelectedComposeService(t *testing.T) {
 	project := core.Project{Type: core.ProjectTypeCompose, WorkingDir: "/srv/app", ConfigFiles: []string{"/srv/app/compose.yml"}}
 	cmd := ServiceUpdateCheckCommand(project, " api ")

@@ -451,25 +451,30 @@ func TestComposeDeployUsesSyntaxHighlightedDialogEditor(t *testing.T) {
 	}
 }
 
-func TestProjectRedeployStartsLiveLogRefreshImmediately(t *testing.T) {
+func TestProjectDetailSeparatesUpdateAndRedeployActions(t *testing.T) {
 	appData, err := Assets.ReadFile("static/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := string(appData)
-	if !strings.Contains(js, "重新部署/更新") || !strings.Contains(js, "startProjectLogRefresh") {
-		t.Fatal("project redeploy label or live log refresh helper is missing")
+	for _, want := range []string{
+		`id="deploy">更新`, `id="redeploy">重新部署`, "async function deploy(id)", "async function redeploy(id)",
+		"/actions/deploy", "/actions/redeploy", "startProjectLogRefresh(id)",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("project update/redeploy UI missing %q", want)
+		}
 	}
-	start := strings.Index(js, "async function deploy(id)")
+	start := strings.Index(js, "async function redeploy(id)")
 	end := strings.Index(js[start:], "\nasync function deleteContainer")
 	if start == -1 || end == -1 {
-		t.Fatal("could not locate deploy workflow")
+		t.Fatal("could not locate project redeploy workflow")
 	}
 	workflow := js[start : start+end]
 	refresh := strings.Index(workflow, "startProjectLogRefresh(id)")
-	request := strings.Index(workflow, "/actions/deploy")
+	request := strings.Index(workflow, "/actions/redeploy")
 	if refresh == -1 || request == -1 || refresh > request {
-		t.Fatalf("live logs must start before deploy request: %s", workflow)
+		t.Fatalf("live logs must start before redeploy request: %s", workflow)
 	}
 }
 
@@ -480,8 +485,8 @@ func TestContainerDetailSupportsIndividualUpdateCheckAndRedeploy(t *testing.T) {
 	}
 	js := string(appData)
 	for _, want := range []string{
-		"data-check-update", "检查更新", "data-deploy", "拉取并重新部署",
-		"containerCheckUpdate", "/actions/check-update", "containerDeploy", "/actions/deploy",
+		"data-check-update", "检查更新", "data-update", ">更新</button>", "data-redeploy", ">重新部署</button>",
+		"containerCheckUpdate", "/actions/check-update", "containerDeploy", "/actions/deploy", "containerRedeploy", "/actions/redeploy",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("container update UI missing %q", want)
