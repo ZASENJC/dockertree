@@ -28,6 +28,10 @@ type progressStreamingExecutor struct {
 	fakeExecutor
 }
 
+type deployProgressStreamingExecutor struct {
+	fakeExecutor
+}
+
 func (f *progressStreamingExecutor) ExecuteStream(_ context.Context, cmd docker.Command, emit func([]byte)) (docker.Result, error) {
 	f.commands = append(f.commands, cmd.String())
 	if strings.HasSuffix(cmd.String(), " config --format json") {
@@ -47,6 +51,33 @@ func (f *progressStreamingExecutor) ExecuteStream(_ context.Context, cmd docker.
 	}
 	emit([]byte("done\n"))
 	return docker.Result{Command: cmd.String(), Output: "done\n"}, nil
+}
+
+func (f *deployProgressStreamingExecutor) ExecuteStream(_ context.Context, cmd docker.Command, emit func([]byte)) (docker.Result, error) {
+	f.commands = append(f.commands, cmd.String())
+	var output string
+	switch {
+	case len(cmd.Args) > 0 && cmd.Args[0] == "run":
+		output = strings.Join([]string{
+			"Unable to find image 'redis:7' locally",
+			"a1b2c3d4e5f6: Pulling fs layer",
+			"a1b2c3d4e5f6: Downloading [=================>] 1.2MB/2.4MB",
+			"a1b2c3d4e5f6: Pull complete",
+			"Status: Downloaded newer image for redis:7",
+			"container-id",
+		}, "\n") + "\n"
+	case strings.Contains(cmd.String(), " --progress json up -d"):
+		output = strings.Join([]string{
+			`{"id":"Container demo-web-1","status":"Working","text":"Creating"}`,
+			`{"id":"Container demo-web-1","status":"Done","text":"Started"}`,
+		}, "\n") + "\n"
+	default:
+		output = "ok\n"
+	}
+	split := len(output) / 2
+	emit([]byte(output[:split]))
+	emit([]byte(output[split:]))
+	return docker.Result{Command: cmd.String(), Output: output}, nil
 }
 
 func (f *streamingFakeExecutor) Execute(_ context.Context, cmd docker.Command) (docker.Result, error) {
@@ -836,6 +867,65 @@ func TestComposePullStreamUsesProgressEventsWithoutRawJSONOutput(t *testing.T) {
 	if strings.Contains(body, `"type":"output","data":"{\"id\":\"Image registry/app:latest`) {
 		t.Fatalf("raw Compose progress JSON must not be appended to operation logs: %s", body)
 	}
+}
+
+func TestDeployPageStreamsProgressWithoutNoisyOutput(t *testing.T) {
+	t.Run("container image pull", func(t *testing.T) {
+		exec := &deployProgressStreamingExecutor{}
+		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{}, fakeScanner{}, exec).Handler()
+
+		req := httptest.NewRequest(http.MethodPost, "/api/deploy/container", strings.NewReader(`{"name":"redis-local","image":"redis:7"}`))
+		req.Header.Set("Authorization", "Bearer secret")
+		req.Header.Set("Accept", "application/x-ndjson")
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, req)
+
+		body := r.Body.String()
+		for _, want := range []string{
+			`"type":"progress"`,
+			`"label":"部署进度"`,
+			`"id":"a1b2c3d4e5f6"`,
+			`"status":"Done"`,
+			`"output":"部署完成：1/1`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("container deploy progress stream missing %q: %s", want, body)
+			}
+		}
+		if strings.Contains(body, `"type":"output","data":"a1b2c3d4e5f6:`) || strings.Contains(body, "=================>") {
+			t.Fatalf("container pull progress must not be appended as raw operation output: %s", body)
+		}
+	})
+
+	t.Run("compose up", func(t *testing.T) {
+		dir := t.TempDir()
+		composePath := dir + "/compose.yml"
+		exec := &deployProgressStreamingExecutor{}
+		h := New(config.Config{AdminToken: "secret"}, &fakeInventory{}, fakeScanner{}, exec).Handler()
+		body := `{"name":"demo","composePath":"` + composePath + `","composeContent":"services:\n  web:\n    image: nginx\n"}`
+
+		req := httptest.NewRequest(http.MethodPost, "/api/deploy/compose", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		req.Header.Set("Accept", "application/x-ndjson")
+		r := httptest.NewRecorder()
+		h.ServeHTTP(r, req)
+
+		response := r.Body.String()
+		for _, want := range []string{
+			"docker compose -f " + composePath + " --progress json up -d",
+			`"type":"progress"`,
+			`"label":"部署进度"`,
+			`"id":"Container demo-web-1"`,
+			`"output":"部署完成：1/1"`,
+		} {
+			if !strings.Contains(response, want) {
+				t.Fatalf("compose deploy progress stream missing %q: %s", want, response)
+			}
+		}
+		if strings.Contains(response, `"type":"output","data":"{\"id\":\"Container demo-web-1`) {
+			t.Fatalf("raw Compose deploy progress JSON must not be appended to operation output: %s", response)
+		}
+	})
 }
 
 func TestContainerUpdateRejectsStandaloneContainers(t *testing.T) {

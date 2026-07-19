@@ -395,7 +395,7 @@ func TestComposeDeployPlanUsesProvidedPath(t *testing.T) {
 	if plan.WorkingDir != "/srv/my app" {
 		t.Fatalf("WorkingDir = %q", plan.WorkingDir)
 	}
-	if len(plan.Commands) != 1 || plan.Commands[0] != "docker compose -f '/srv/my app/compose.yml' up -d" {
+	if len(plan.Commands) != 1 || plan.Commands[0] != "docker compose -f '/srv/my app/compose.yml' --progress json up -d" {
 		t.Fatalf("unexpected plan: %#v", plan)
 	}
 }

@@ -934,3 +934,24 @@ func TestOperationRequestsRenderStreamingOutputInRealTime(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployActionsUseCompactProgressDisplay(t *testing.T) {
+	appData, err := Assets.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(appData)
+	for _, want := range []string{
+		"function deploymentRequestOptions(payload)",
+		"operationLabel: '部署进度'",
+		"compactOutput: true",
+		"previewOnly ? jsonPost(payload) : deploymentRequestOptions(payload)",
+		"saveOnly ? jsonPost(payload) : deploymentRequestOptions(payload)",
+		"if (display.compactOutput)",
+		"setOperationProgressDetail(event.data)",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("deploy progress display missing %q", want)
+		}
+	}
+}
