@@ -268,9 +268,9 @@ sudo ./dockertree.sh uninstall
 
 ## 从源码运行
 
+下面的命令面向已经检出源码的开发者；普通安装和更新仍只需要使用 `dockertree.sh`。
+
 ```bash
-git clone https://github.com/ZASENJC/dockertree.git
-cd dockertree
 go run ./cmd/dockertree
 ```
 
