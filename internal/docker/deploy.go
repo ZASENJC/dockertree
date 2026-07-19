@@ -266,7 +266,7 @@ func ValidatedComposeDeployCommand(req ComposeDeployRequest) (Command, error) {
 	if _, err := NormalizeComposeContent(content); err != nil {
 		return Command{}, err
 	}
-	return Command{Name: "docker", Args: []string{"compose", "-f", path, "up", "-d"}, Dir: filepath.Dir(path)}, nil
+	return Command{Name: "docker", Args: []string{"compose", "-f", path, "--progress", "json", "up", "-d"}, Dir: filepath.Dir(path)}, nil
 }
 
 func NormalizeComposeContent(content string) (string, error) {

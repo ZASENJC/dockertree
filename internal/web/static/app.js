@@ -47,6 +47,7 @@ const operationProgressBar = document.querySelector('#operationProgressBar');
 const operationProgressSummary = document.querySelector('#operationProgressSummary');
 const operationProgressDetail = document.querySelector('#operationProgressDetail');
 const operationProgressTasks = new Map();
+let operationProgressLabel = '操作进度';
 const filterBar = document.querySelector('#filterBar');
 const globalSearch = document.querySelector('#globalSearch');
 const statusFilter = document.querySelector('#statusFilter');
@@ -608,10 +609,10 @@ async function runAutoRefresh() {
 }
 
 async function api(path, options = {}) {
-  const { live = true, ...requestOptions } = options;
+  const { live = true, operationLabel = '', compactOutput = false, ...requestOptions } = options;
   const method = (requestOptions.method || 'GET').toUpperCase();
   if (live && method !== 'GET') {
-    return apiOperation(path, requestOptions, method);
+    return apiOperation(path, requestOptions, method, { operationLabel, compactOutput });
   }
   const res = await fetch(path, {
     ...requestOptions,
@@ -626,9 +627,11 @@ async function api(path, options = {}) {
   return res.json();
 }
 
-async function apiOperation(path, options, method) {
-  resetOperationProgress();
-  operationOutput.textContent = `${method} ${path}\n正在连接操作日志...\n`;
+async function apiOperation(path, options, method, display) {
+  resetOperationProgress(display.operationLabel, Boolean(display.operationLabel));
+  operationOutput.textContent = display.compactOutput
+    ? `${method} ${path}\n${operationActionLabel(display.operationLabel)}进行中...`
+    : `${method} ${path}\n正在连接操作日志...\n`;
   operationOutput.scrollTop = operationOutput.scrollHeight;
   const res = await fetch(path, {
     ...options,
@@ -644,36 +647,49 @@ async function apiOperation(path, options, method) {
   if (!res.headers.get('Content-Type')?.includes('application/x-ndjson') || !res.body) {
     return res.json();
   }
-  return readOperationStream(res, method, path);
+  return readOperationStream(res, method, path, display);
 }
 
-async function readOperationStream(res, method, path) {
+async function readOperationStream(res, method, path, display = {}) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let pending = '';
   let result;
   let resultStatus = 0;
-  resetOperationProgress();
-  operationOutput.textContent = `${method} ${path}\n`;
+  resetOperationProgress(display.operationLabel, Boolean(display.operationLabel));
+  operationOutput.textContent = display.compactOutput
+    ? `${method} ${path}\n${operationActionLabel(display.operationLabel)}进行中...`
+    : `${method} ${path}\n`;
 
   const consume = (line) => {
     if (!line.trim()) return;
     const event = JSON.parse(line);
     if (event.type === 'start') {
-      appendOperationOutput('正在执行...\n');
+      if (display.compactOutput) setOperationProgressDetail('正在执行...');
+      else appendOperationOutput('正在执行...\n');
     } else if (event.type === 'command') {
-      appendOperationOutput(`\n$ ${event.data}\n`);
+      if (display.compactOutput) setOperationProgressDetail(event.data);
+      else appendOperationOutput(`\n$ ${event.data}\n`);
     } else if (event.type === 'output') {
-      appendOperationOutput(event.data || '');
+      if (display.compactOutput) {
+        setOperationProgressDetail(event.data);
+      } else {
+        appendOperationOutput(event.data || '');
+      }
     } else if (event.type === 'progress') {
       updateOperationProgress(event.progress);
     } else if (event.type === 'error') {
-      appendOperationOutput(`\nerror: ${event.data}\n`);
+      if (display.compactOutput) setOperationProgressDetail(event.data);
+      else appendOperationOutput(`\nerror: ${event.data}\n`);
     } else if (event.type === 'result') {
       result = event.result;
       resultStatus = event.status || 200;
       finishOperationProgress(resultStatus < 400);
-      appendOperationOutput(resultStatus < 400 ? '\n操作完成。\n' : '\n操作失败。\n');
+      if (display.compactOutput) {
+        operationOutput.textContent = formatDeployResult(result);
+      } else {
+        appendOperationOutput(resultStatus < 400 ? '\n操作完成。\n' : '\n操作失败。\n');
+      }
     }
   };
 
@@ -696,17 +712,19 @@ async function readOperationStream(res, method, path) {
   return result;
 }
 
-function resetOperationProgress() {
+function resetOperationProgress(label = '', visible = false) {
   operationProgressTasks.clear();
-  operationProgress.classList.add('hidden');
+  operationProgressLabel = label || '操作进度';
+  operationProgress.classList.toggle('hidden', !visible);
   operationProgressBar.max = 1;
   operationProgressBar.removeAttribute('value');
-  operationProgressSummary.textContent = '镜像拉取准备中';
+  operationProgressSummary.textContent = `${operationProgressLabel}准备中`;
   operationProgressDetail.textContent = '';
 }
 
 function updateOperationProgress(progress) {
   if (!progress) return;
+  operationProgressLabel = progress.label || operationProgressLabel;
   const id = progress.id || progress.text || '镜像拉取任务';
   operationProgressTasks.set(id, progress);
   const tasks = [...operationProgressTasks.values()];
@@ -716,8 +734,8 @@ function updateOperationProgress(progress) {
   operationProgressBar.max = Math.max(tasks.length, 1);
   operationProgressBar.value = completed;
   operationProgressSummary.textContent = failed
-    ? `镜像拉取 ${completed}/${tasks.length}，${failed} 个失败`
-    : `镜像拉取 ${completed}/${tasks.length}`;
+    ? `${operationProgressLabel} ${completed}/${tasks.length}，${failed} 个失败`
+    : `${operationProgressLabel} ${completed}/${tasks.length}`;
   const label = id.replace(/^Image\s+/, '');
   operationProgressDetail.textContent = [label, progress.text || progress.status].filter(Boolean).join(' · ');
 }
@@ -726,9 +744,20 @@ function finishOperationProgress(success) {
   if (operationProgress.classList.contains('hidden')) return;
   const total = Math.max(operationProgressTasks.size, 1);
   if (success) operationProgressBar.value = total;
+  const completed = operationProgressTasks.size;
+  const action = operationActionLabel(operationProgressLabel);
   operationProgressSummary.textContent = success
-    ? `镜像拉取完成 ${operationProgressTasks.size}/${operationProgressTasks.size}`
-    : '镜像拉取失败';
+    ? (completed ? `${action}完成 ${completed}/${completed}` : `${action}完成`)
+    : `${action}失败`;
+}
+
+function operationActionLabel(label) {
+  return (label || '操作进度').replace(/进度$/, '');
+}
+
+function setOperationProgressDetail(text) {
+  const lines = String(text || '').split(/[\r\n]+/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length) operationProgressDetail.textContent = lines[lines.length - 1];
 }
 
 function appendOperationOutput(text) {
@@ -2402,7 +2431,8 @@ async function deployContainer(previewOnly) {
   const path = previewOnly ? '/api/deploy/container/preview' : '/api/deploy/container';
   if (!previewOnly && !confirm('确认部署这个容器？')) return;
   try {
-    const result = await apiResult(path, jsonPost(payload));
+    const options = previewOnly ? jsonPost(payload) : deploymentRequestOptions(payload);
+    const result = await apiResult(path, options);
     deployOutput.textContent = formatDeployResult(result);
     if (!previewOnly) await loadProjects();
   } catch (err) {
@@ -2462,7 +2492,8 @@ async function deployCompose(previewOnly, saveOnly = false) {
     if (!confirm(prompt)) return;
     payload.expectedExistingHash = preview.existingHash || '';
     const endpoint = saveOnly ? '/api/deploy/compose/save' : '/api/deploy/compose';
-    const result = await apiResult(endpoint, jsonPost(payload));
+    const options = saveOnly ? jsonPost(payload) : deploymentRequestOptions(payload);
+    const result = await apiResult(endpoint, options);
     deployOutput.textContent = formatDeployResult(result);
     showOperationResult(result);
     if (!result.error) {
@@ -2501,6 +2532,14 @@ function jsonPost(payload) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+  };
+}
+
+function deploymentRequestOptions(payload) {
+  return {
+    ...jsonPost(payload),
+    operationLabel: '部署进度',
+    compactOutput: true,
   };
 }
 

@@ -58,14 +58,14 @@ func (f *deployProgressStreamingExecutor) ExecuteStream(_ context.Context, cmd d
 	var output string
 	switch {
 	case len(cmd.Args) > 0 && cmd.Args[0] == "run":
-		output = strings.Join([]string{
-			"Unable to find image 'redis:7' locally",
-			"a1b2c3d4e5f6: Pulling fs layer",
-			"a1b2c3d4e5f6: Downloading [=================>] 1.2MB/2.4MB",
-			"a1b2c3d4e5f6: Pull complete",
-			"Status: Downloaded newer image for redis:7",
-			"container-id",
-		}, "\n") + "\n"
+		output = "Unable to find image 'redis:7' locally\n" +
+			"a1b2c3d4e5f6: Pulling fs layer\n" +
+			"f6e5d4c3b2a1: Already exists\n" +
+			"a1b2c3d4e5f6: Downloading [=========>] 1.2MB/2.4MB\r" +
+			"a1b2c3d4e5f6: Downloading [=================>] 2.4MB/2.4MB\r" +
+			"a1b2c3d4e5f6: Pull complete\n" +
+			"Status: Downloaded newer image for redis:7\n" +
+			"container-id\n"
 	case strings.Contains(cmd.String(), " --progress json up -d"):
 		output = strings.Join([]string{
 			`{"id":"Container demo-web-1","status":"Working","text":"Creating"}`,
@@ -886,7 +886,7 @@ func TestDeployPageStreamsProgressWithoutNoisyOutput(t *testing.T) {
 			`"label":"部署进度"`,
 			`"id":"a1b2c3d4e5f6"`,
 			`"status":"Done"`,
-			`"output":"部署完成：1/1`,
+			`"output":"部署完成：2/2`,
 		} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("container deploy progress stream missing %q: %s", want, body)
@@ -1226,7 +1226,7 @@ func TestComposeDeployWritesProvidedPathAndExecutes(t *testing.T) {
 	if r.Code != http.StatusOK {
 		t.Fatalf("deploy status=%d body=%s", r.Code, r.Body.String())
 	}
-	if len(exec.commands) != 2 || !strings.Contains(exec.commands[0], "docker compose -f ") || !strings.HasSuffix(exec.commands[0], " config") || exec.commands[1] != "docker compose -f "+composePath+" up -d" {
+	if len(exec.commands) != 2 || !strings.Contains(exec.commands[0], "docker compose -f ") || !strings.HasSuffix(exec.commands[0], " config") || exec.commands[1] != "docker compose -f "+composePath+" --progress json up -d" {
 		t.Fatalf("commands=%#v", exec.commands)
 	}
 }
@@ -1328,7 +1328,7 @@ func TestComposeDeployFailureRestoresExistingFile(t *testing.T) {
 	if string(got) != string(original) {
 		t.Fatalf("compose file was not restored after deploy failure:\n%s", got)
 	}
-	if len(exec.commands) != 2 || !strings.HasSuffix(exec.commands[0], " config") || exec.commands[1] != "docker compose -f "+composePath+" up -d" {
+	if len(exec.commands) != 2 || !strings.HasSuffix(exec.commands[0], " config") || exec.commands[1] != "docker compose -f "+composePath+" --progress json up -d" {
 		t.Fatalf("commands=%#v", exec.commands)
 	}
 }
@@ -1425,7 +1425,7 @@ func TestComposeDeployPreviewDoesNotWriteOrExecute(t *testing.T) {
 	r := httptest.NewRecorder()
 	h.ServeHTTP(r, req)
 
-	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), "docker compose -f "+composePath+" up -d") {
+	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), "docker compose -f "+composePath+" --progress json up -d") {
 		t.Fatalf("preview status=%d body=%s", r.Code, r.Body.String())
 	}
 	if len(exec.commands) != 0 {

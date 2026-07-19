@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -27,6 +28,7 @@ type operationStreamEvent struct {
 }
 
 type operationProgress struct {
+	Label  string `json:"label,omitempty"`
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	Text   string `json:"text,omitempty"`
@@ -93,19 +95,20 @@ func (s *Server) streamOperationResponse(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) execute(ctx context.Context, cmd docker.Command) (docker.Result, error) {
+	progressParser := operationProgressParserFor(cmd)
 	stream := operationStreamFromContext(ctx)
 	if stream == nil {
 		result, err := s.exec.Execute(ctx, cmd)
-		return compactComposeProgressResult(cmd, result), err
+		return compactOperationProgressResult(progressParser, result), err
 	}
 	stream.emit(operationStreamEvent{Type: "command", Data: cmd.RedactedString()})
-	emitter := newOperationOutputEmitter(stream, isComposeJSONProgressCommand(cmd))
+	emitter := newOperationOutputEmitter(stream, progressParser)
 	if streamingExec, ok := s.exec.(docker.StreamingExecutor); ok {
 		result, err := streamingExec.ExecuteStream(ctx, cmd, func(chunk []byte) {
 			emitter.emit(chunk)
 		})
 		emitter.flush()
-		result = compactComposeProgressResult(cmd, result)
+		result = compactOperationProgressResult(progressParser, result)
 		if result.Error != "" {
 			stream.emit(operationStreamEvent{Type: "error", Data: result.Error})
 		}
@@ -116,45 +119,50 @@ func (s *Server) execute(ctx context.Context, cmd docker.Command) (docker.Result
 		emitter.emit([]byte(result.Output))
 	}
 	emitter.flush()
-	result = compactComposeProgressResult(cmd, result)
+	result = compactOperationProgressResult(progressParser, result)
 	if result.Error != "" {
 		stream.emit(operationStreamEvent{Type: "error", Data: result.Error})
 	}
 	return result, err
 }
 
-type operationOutputEmitter struct {
-	stream   *operationStream
-	progress bool
-	pending  string
+type operationProgressParser struct {
+	label string
+	parse func(string) (operationProgress, bool)
 }
 
-func newOperationOutputEmitter(stream *operationStream, progress bool) *operationOutputEmitter {
-	return &operationOutputEmitter{stream: stream, progress: progress}
+type operationOutputEmitter struct {
+	stream  *operationStream
+	parser  *operationProgressParser
+	pending string
+}
+
+func newOperationOutputEmitter(stream *operationStream, parser *operationProgressParser) *operationOutputEmitter {
+	return &operationOutputEmitter{stream: stream, parser: parser}
 }
 
 func (e *operationOutputEmitter) emit(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
-	if !e.progress {
+	if e.parser == nil {
 		e.stream.emit(operationStreamEvent{Type: "output", Data: string(chunk)})
 		return
 	}
 	e.pending += string(chunk)
 	for {
-		newline := strings.IndexByte(e.pending, '\n')
-		if newline == -1 {
+		separator := operationProgressSeparator(e.pending)
+		if separator == -1 {
 			return
 		}
-		line := e.pending[:newline]
-		e.pending = e.pending[newline+1:]
+		line := e.pending[:separator]
+		e.pending = e.pending[separator+1:]
 		e.emitLine(line, true)
 	}
 }
 
 func (e *operationOutputEmitter) flush() {
-	if !e.progress || e.pending == "" {
+	if e.parser == nil || e.pending == "" {
 		return
 	}
 	e.emitLine(e.pending, false)
@@ -162,7 +170,8 @@ func (e *operationOutputEmitter) flush() {
 }
 
 func (e *operationOutputEmitter) emitLine(line string, newline bool) {
-	if progress, ok := parseComposeProgressLine(line); ok {
+	if progress, ok := e.parser.parse(line); ok {
+		progress.Label = e.parser.label
 		e.stream.emit(operationStreamEvent{Type: "progress", Progress: &progress})
 		return
 	}
@@ -174,21 +183,57 @@ func (e *operationOutputEmitter) emitLine(line string, newline bool) {
 	}
 }
 
+func operationProgressSeparator(value string) int {
+	newline := strings.IndexByte(value, '\n')
+	carriageReturn := strings.IndexByte(value, '\r')
+	if newline == -1 {
+		return carriageReturn
+	}
+	if carriageReturn == -1 || newline < carriageReturn {
+		return newline
+	}
+	return carriageReturn
+}
+
+func operationProgressParserFor(cmd docker.Command) *operationProgressParser {
+	if isComposeJSONProgressCommand(cmd) {
+		label := "操作进度"
+		if commandHasArg(cmd, "pull") {
+			label = "镜像拉取"
+		} else if commandHasArg(cmd, "up") {
+			label = "部署进度"
+		}
+		return &operationProgressParser{label: label, parse: parseComposeProgressLine}
+	}
+	if cmd.Name == "docker" && len(cmd.Args) > 0 && (cmd.Args[0] == "run" || cmd.Args[0] == "pull") {
+		label := "镜像拉取"
+		if cmd.Args[0] == "run" {
+			label = "部署进度"
+		}
+		return &operationProgressParser{label: label, parse: parseDockerPullProgressLine}
+	}
+	return nil
+}
+
 func isComposeJSONProgressCommand(cmd docker.Command) bool {
 	if cmd.Name != "docker" || len(cmd.Args) == 0 || cmd.Args[0] != "compose" {
 		return false
 	}
-	hasJSONProgress := false
-	hasPull := false
 	for i, arg := range cmd.Args {
 		if arg == "--progress" && i+1 < len(cmd.Args) && cmd.Args[i+1] == "json" {
-			hasJSONProgress = true
-		}
-		if arg == "pull" {
-			hasPull = true
+			return true
 		}
 	}
-	return hasJSONProgress && hasPull
+	return false
+}
+
+func commandHasArg(cmd docker.Command, target string) bool {
+	for _, arg := range cmd.Args {
+		if arg == target {
+			return true
+		}
+	}
+	return false
 }
 
 func parseComposeProgressLine(line string) (operationProgress, bool) {
@@ -205,19 +250,39 @@ func parseComposeProgressLine(line string) (operationProgress, bool) {
 	return progress, true
 }
 
-func compactComposeProgressResult(cmd docker.Command, result docker.Result) docker.Result {
-	if !isComposeJSONProgressCommand(cmd) || result.Output == "" {
+var dockerPullProgressPattern = regexp.MustCompile(`^([a-fA-F0-9]{6,64}):\s+(.+)$`)
+var dockerPullBarPattern = regexp.MustCompile(`\s*\[[=>\-\s]+\]\s*`)
+
+func parseDockerPullProgressLine(line string) (operationProgress, bool) {
+	match := dockerPullProgressPattern.FindStringSubmatch(strings.TrimSpace(line))
+	if len(match) != 3 {
+		return operationProgress{}, false
+	}
+	text := strings.TrimSpace(dockerPullBarPattern.ReplaceAllString(match[2], " "))
+	status := "Working"
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "pull complete"), strings.Contains(lower, "already exists"):
+		status = "Done"
+	case strings.Contains(lower, "error"), strings.Contains(lower, "failed"), strings.Contains(lower, "denied"):
+		status = "Error"
+	}
+	return operationProgress{ID: match[1], Status: status, Text: text}, true
+}
+
+func compactOperationProgressResult(parser *operationProgressParser, result docker.Result) docker.Result {
+	if parser == nil || result.Output == "" {
 		return result
 	}
 	progressByID := map[string]operationProgress{}
 	plainLines := make([]string, 0)
-	for _, line := range strings.Split(result.Output, "\n") {
-		if progress, ok := parseComposeProgressLine(line); ok {
+	for _, line := range strings.FieldsFunc(result.Output, func(char rune) bool { return char == '\n' || char == '\r' }) {
+		if progress, ok := parser.parse(line); ok {
 			progressByID[progress.ID] = progress
 			continue
 		}
 		if strings.TrimSpace(line) != "" {
-			plainLines = append(plainLines, line)
+			plainLines = append(plainLines, strings.TrimSpace(line))
 		}
 	}
 	if len(progressByID) == 0 {
@@ -229,9 +294,13 @@ func compactComposeProgressResult(cmd docker.Command, result docker.Result) dock
 			done++
 		}
 	}
-	summary := fmt.Sprintf("镜像拉取进度：%d/%d", done, len(progressByID))
+	progressLabel := parser.label
+	if !strings.HasSuffix(progressLabel, "进度") {
+		progressLabel += "进度"
+	}
+	summary := fmt.Sprintf("%s：%d/%d", progressLabel, done, len(progressByID))
 	if done == len(progressByID) {
-		summary = fmt.Sprintf("镜像拉取完成：%d/%d", done, len(progressByID))
+		summary = fmt.Sprintf("%s完成：%d/%d", strings.TrimSuffix(parser.label, "进度"), done, len(progressByID))
 	}
 	result.Output = strings.Join(append([]string{summary}, plainLines...), "\n")
 	return result

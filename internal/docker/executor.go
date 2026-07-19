@@ -365,7 +365,7 @@ func ComposeValidateCommand(project core.Project) Command {
 
 func ComposeUpCommand(project core.Project) Command {
 	args := composeArgs(project.ConfigFiles)
-	args = append(args, "up", "-d")
+	args = append(args, "--progress", "json", "up", "-d")
 	return Command{Name: "docker", Args: args, Dir: project.WorkingDir}
 }
 

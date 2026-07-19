@@ -910,7 +910,7 @@ func TestOperationRequestsRenderStreamingOutputInRealTime(t *testing.T) {
 	}
 	html := string(indexData)
 	js := string(appData)
-	for _, want := range []string{`<progress id="operationProgressBar"`, `id="operationProgressSummary"`, `id="operationProgressDetail"`} {
+	for _, want := range []string{`<progress id="operationProgressBar"`, `aria-label="操作进度"`, `id="operationProgressSummary">操作进度准备中`, `id="operationProgressDetail"`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("native operation progress UI missing %q", want)
 		}

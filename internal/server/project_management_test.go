@@ -200,7 +200,7 @@ func TestComposeDeployDerivesPathAndStartsProject(t *testing.T) {
 	if _, err := os.Stat(wantPath); err != nil {
 		t.Fatalf("derived compose file: %v", err)
 	}
-	if len(exec.commands) != 2 || exec.commands[1] != "docker compose -f "+wantPath+" up -d" {
+	if len(exec.commands) != 2 || exec.commands[1] != "docker compose -f "+wantPath+" --progress json up -d" {
 		t.Fatalf("derived deploy commands: %#v", exec.commands)
 	}
 }
@@ -238,7 +238,7 @@ func TestEditingMultiFileComposeDeployUsesEveryProjectFile(t *testing.T) {
 	if err := json.NewDecoder(r.Body).Decode(&preview); err != nil {
 		t.Fatal(err)
 	}
-	wantDeploy := "docker compose -f " + basePath + " -f " + overridePath + " up -d"
+	wantDeploy := "docker compose -f " + basePath + " -f " + overridePath + " --progress json up -d"
 	if len(preview.Plan.Commands) != 1 || preview.Plan.Commands[0] != wantDeploy {
 		t.Fatalf("multi-file preview commands=%#v want %q", preview.Plan.Commands, wantDeploy)
 	}
